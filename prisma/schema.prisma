@@ -1,0 +1,213 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Vendor {
+  id        Int       @id @default(autoincrement())
+  name      String
+  email     String    @unique
+  password  String
+  storeName String
+  avatar    String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  orders    Order[]
+  products  Product[]
+
+  @@map("vendors")
+}
+
+model Category {
+  id             String                  @id @default(cuid())
+  name           String
+  slug           String                  @unique
+  image          String?
+  parentId       String?
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+  parent         Category?               @relation("CategoryToChildren", fields: [parentId], references: [id], onDelete: Cascade)
+  children       Category[]              @relation("CategoryToChildren")
+  attributes     CategoryAttribute[]
+  specifications CategorySpecification[]
+  products       Product[]
+
+  @@map("categories")
+}
+
+model Attribute {
+  id         String              @id @default(cuid())
+  name       String
+  slug       String              @unique
+  type       AttributeType
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+  values     AttributeValue[]
+  categories CategoryAttribute[]
+
+  @@map("attributes")
+}
+
+model AttributeValue {
+  id          String                    @id @default(cuid())
+  value       String
+  attributeId String
+  createdAt   DateTime                  @default(now())
+  updatedAt   DateTime                  @updatedAt
+  attribute   Attribute                 @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+  variants    ProductVariantAttribute[]
+
+  @@map("attribute_values")
+}
+
+model CategoryAttribute {
+  id           String    @id @default(cuid())
+  categoryId   String
+  attributeId  String
+  isRequired   Boolean   @default(false)
+  isForVariant Boolean   @default(true)
+  filterable   Boolean   @default(true)
+  attribute    Attribute @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+  category     Category  @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([categoryId, attributeId])
+  @@map("category_attributes")
+}
+
+model Specification {
+  id         String                      @id @default(cuid())
+  name       String
+  slug       String                      @unique
+  type       SpecificationType
+  unit       String?
+  createdAt  DateTime                    @default(now())
+  updatedAt  DateTime                    @updatedAt
+  categories CategorySpecification[]
+  values     ProductSpecificationValue[]
+
+  @@map("specifications")
+}
+
+model CategorySpecification {
+  id              String        @id @default(cuid())
+  categoryId      String
+  specificationId String
+  isRequired      Boolean       @default(false)
+  filterable      Boolean       @default(true)
+  category        Category      @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  specification   Specification @relation(fields: [specificationId], references: [id], onDelete: Cascade)
+
+  @@unique([categoryId, specificationId])
+  @@map("category_specifications")
+}
+
+model Product {
+  id             String                      @id @default(cuid())
+  name           String
+  description    String?
+  slug           String                      @unique
+  vendorId       Int
+  categoryId     String
+  createdAt      DateTime                    @default(now())
+  updatedAt      DateTime                    @updatedAt
+  specifications ProductSpecificationValue[]
+  variants       ProductVariant[]
+  category       Category                    @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  vendor         Vendor                      @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@map("products")
+}
+
+model ProductVariant {
+  id         String                    @id @default(cuid())
+  productId  String
+  name       String?
+  sku        String                    @unique
+  price      Float
+  stock      Int                       @default(0)
+  weight     Float?
+  images     String[]
+  createdAt  DateTime                  @default(now())
+  updatedAt  DateTime                  @updatedAt
+  orderItems OrderItem[]
+  attributes ProductVariantAttribute[]
+  product    Product                   @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@map("product_variants")
+}
+
+model ProductVariantAttribute {
+  id               String         @id @default(cuid())
+  variantId        String
+  attributeValueId String
+  attributeValue   AttributeValue @relation(fields: [attributeValueId], references: [id], onDelete: Cascade)
+  variant          ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@unique([variantId, attributeValueId])
+  @@map("product_variant_attributes")
+}
+
+model ProductSpecificationValue {
+  id              String        @id @default(cuid())
+  productId       String
+  specificationId String
+  valueString     String?
+  valueNumber     Float?
+  product         Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  specification   Specification @relation(fields: [specificationId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, specificationId])
+  @@map("product_specification_values")
+}
+
+model Order {
+  id          Int         @id @default(autoincrement())
+  totalAmount Float
+  status      OrderStatus
+  vendorId    Int
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  items       OrderItem[]
+  vendor      Vendor      @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@map("orders")
+}
+
+model OrderItem {
+  id        String         @id @default(cuid())
+  orderId   Int
+  variantId String
+  quantity  Int
+  price     Float
+  order     Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@map("order_items")
+}
+
+enum AttributeType {
+  TEXT
+  NUMBER
+  BOOLEAN
+  SELECT
+}
+
+enum SpecificationType {
+  TEXT
+  NUMBER
+  BOOLEAN
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  REFUNDED
+}

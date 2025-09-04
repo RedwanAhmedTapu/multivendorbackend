@@ -4,17 +4,13 @@ import { prisma } from "../config/prisma.ts";
 export const CategoryService = {
   /**
    * Get all categories with unlimited nested layers
-   * Attributes and specifications are included only at leaf categories
+   * Attributes and specifications (with options) are included only at leaf categories
    */
   async getAll() {
     const categories = await prisma.category.findMany({
       where: { parentId: null },
-      include: {
-        children: true,
-      },
     });
 
-    // Recursive function to build hierarchy with attributes/specs only at leaf
     const buildHierarchy = async (category: any): Promise<any> => {
       const children = await prisma.category.findMany({
         where: { parentId: category.id },
@@ -23,10 +19,10 @@ export const CategoryService = {
       let transformedCategory: any = { ...category, children: [] };
 
       if (children.length > 0) {
-        // If not leaf, recursively add children
+        // Not leaf
         transformedCategory.children = await Promise.all(children.map(buildHierarchy));
       } else {
-        // If leaf, attach attributes and specifications
+        // Leaf category: include attributes & specifications
         const attributes = await prisma.categoryAttribute.findMany({
           where: { categoryId: category.id },
           include: { attribute: { include: { values: true } } },
@@ -34,7 +30,7 @@ export const CategoryService = {
 
         const specifications = await prisma.categorySpecification.findMany({
           where: { categoryId: category.id },
-          include: { specification: true },
+          include: { specification: { include: { options: true } } },
         });
 
         transformedCategory.attributes = attributes.map(a => ({
@@ -59,7 +55,7 @@ export const CategoryService = {
 
   /**
    * Get a category by ID with unlimited nested layers
-   * Attributes/specifications only on leaf nodes
+   * Attributes/specifications (with options) only on leaf nodes
    */
   async getById(id: string) {
     const category = await prisma.category.findUnique({ where: { id } });
@@ -67,7 +63,6 @@ export const CategoryService = {
 
     const buildHierarchy = async (cat: any): Promise<any> => {
       const children = await prisma.category.findMany({ where: { parentId: cat.id } });
-
       let transformedCat: any = { ...cat, children: [] };
 
       if (children.length > 0) {
@@ -80,7 +75,7 @@ export const CategoryService = {
 
         const specifications = await prisma.categorySpecification.findMany({
           where: { categoryId: cat.id },
-          include: { specification: true },
+          include: { specification: { include: { options: true } } },
         });
 
         transformedCat.attributes = attributes.map(a => ({
@@ -104,10 +99,11 @@ export const CategoryService = {
   },
 
   async create(data: any) {
+    console.log(data);
     return prisma.category.create({
       data: {
         name: data.name,
-        slug: data.slug.toLowerCase().replace(/\s+/g, "-"),
+        slug: data.slug.toLowerCase().replace(/\s+/g, "-"), // do NOT append number
         image: data.image,
         parentId: data.parentId || null,
       },
@@ -119,7 +115,7 @@ export const CategoryService = {
       where: { id },
       data: {
         name: data.name,
-        slug: data.slug?.toLowerCase().replace(/\s+/g, "-"),
+        slug: data.slug?.toLowerCase().replace(/\s+/g, "-"), // do NOT append number
         image: data.image,
         parentId: data.parentId,
       },
@@ -136,24 +132,89 @@ export const CategoryService = {
     return prisma.category.delete({ where: { id } });
   },
 
-  async assignAttribute(categoryId: string, attributeId: string, options: { isRequired?: boolean; isForVariant?: boolean; filterable?: boolean } = {}) {
-    return prisma.categoryAttribute.create({
-      data: {
+  /**
+   * Assign an attribute to a category
+   * Reuses existing attributes globally if present
+   */
+  async assignAttribute(
+    categoryId: string,
+    attributeData: { id?: string; name?: string; slug?: string; type: string },
+    options: { isRequired?: boolean; isForVariant?: boolean; filterable?: boolean } = {}
+  ) {
+    // Find or create global attribute
+    let attribute;
+    if (attributeData.id) {
+      attribute = await prisma.attribute.findUnique({ where: { id: attributeData.id } });
+    } else if (attributeData.slug) {
+      attribute = await prisma.attribute.findUnique({ where: { slug: attributeData.slug } });
+    }
+
+    if (!attribute) {
+      attribute = await prisma.attribute.create({
+        data: {
+          name: attributeData.name!,
+          slug: attributeData.slug!.toLowerCase().replace(/\s+/g, "-"),
+          type: attributeData.type as any,
+        },
+      });
+    }
+
+    // Link attribute to category (junction table)
+    return prisma.categoryAttribute.upsert({
+      where: { categoryId_attributeId: { categoryId, attributeId: attribute.id } },
+      update: {
+        isRequired: options.isRequired ?? false,
+        isForVariant: options.isForVariant ?? true,
+        filterable: options.filterable ?? true,
+      },
+      create: {
         categoryId,
-        attributeId,
-        isRequired: options.isRequired || false,
+        attributeId: attribute.id,
+        isRequired: options.isRequired ?? false,
         isForVariant: options.isForVariant ?? true,
         filterable: options.filterable ?? true,
       },
     });
   },
 
-  async assignSpecification(categoryId: string, specificationId: string, options: { isRequired?: boolean; filterable?: boolean } = {}) {
-    return prisma.categorySpecification.create({
-      data: {
+  /**
+   * Assign a specification to a category
+   * Reuses existing specifications globally if present
+   */
+  async assignSpecification(
+    categoryId: string,
+    specificationData: { id?: string; name?: string; slug?: string; type: string },
+    options: { isRequired?: boolean; filterable?: boolean } = {}
+  ) {
+    // Find or create global specification
+    let specification;
+    if (specificationData.id) {
+      specification = await prisma.specification.findUnique({ where: { id: specificationData.id } });
+    } else if (specificationData.slug) {
+      specification = await prisma.specification.findUnique({ where: { slug: specificationData.slug } });
+    }
+
+    if (!specification) {
+      specification = await prisma.specification.create({
+        data: {
+          name: specificationData.name!,
+          slug: specificationData.slug!.toLowerCase().replace(/\s+/g, "-"),
+          type: specificationData.type as any,
+        },
+      });
+    }
+
+    // Link specification to category (junction table)
+    return prisma.categorySpecification.upsert({
+      where: { categoryId_specificationId: { categoryId, specificationId: specification.id } },
+      update: {
+        isRequired: options.isRequired ?? false,
+        filterable: options.filterable ?? true,
+      },
+      create: {
         categoryId,
-        specificationId,
-        isRequired: options.isRequired || false,
+        specificationId: specification.id,
+        isRequired: options.isRequired ?? false,
         filterable: options.filterable ?? true,
       },
     });

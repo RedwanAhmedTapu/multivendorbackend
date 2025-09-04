@@ -1,4 +1,4 @@
-// AttributeService.ts
+// services/AttributeService.ts
 import { prisma } from "../config/prisma.ts";
 
 export const AttributeService = {
@@ -15,19 +15,32 @@ export const AttributeService = {
   async create(data: any) {
     const { categoryId, name, type, filterable, required, values = [] } = data;
 
-    let slug = name.toLowerCase().replace(/\s+/g, "-");
-    let counter = 1;
-    const originalSlug = slug;
-
-    while (await prisma.attribute.findUnique({ where: { slug } })) {
-      slug = `${originalSlug}-${counter++}`;
-    }
+    const slug = name.toLowerCase().replace(/\s+/g, "-");
 
     return prisma.$transaction(async (tx) => {
-      const attribute = await tx.attribute.create({ data: { name, slug, type } });
+      // Find or create global attribute
+      let attribute = await tx.attribute.findUnique({ where: { slug } });
 
-      const categoryAttribute = await tx.categoryAttribute.create({
-        data: {
+      if (!attribute) {
+        attribute = await tx.attribute.create({
+          data: { name, slug, type },
+        });
+      }
+
+      // Link attribute to category
+      const categoryAttribute = await tx.categoryAttribute.upsert({
+        where: {
+          categoryId_attributeId: {
+            categoryId,
+            attributeId: attribute.id,
+          },
+        },
+        update: {
+          isRequired: required,
+          isForVariant: true,
+          filterable,
+        },
+        create: {
           categoryId,
           attributeId: attribute.id,
           isRequired: required,
@@ -36,11 +49,22 @@ export const AttributeService = {
         },
       });
 
+      // Add values only if attribute is SELECT and they don’t already exist
       if (values.length && type === "SELECT") {
+        const existingValues = await tx.attributeValue.findMany({
+          where: { attributeId: attribute.id },
+        });
+
+        const existingSet = new Set(existingValues.map((v) => v.value.toLowerCase()));
+
         await Promise.all(
-          values.map((value: string) =>
-            tx.attributeValue.create({ data: { attributeId: attribute.id, value: value.trim() } })
-          )
+          values
+            .filter((val: string) => !existingSet.has(val.trim().toLowerCase()))
+            .map((val: string) =>
+              tx.attributeValue.create({
+                data: { attributeId: attribute.id, value: val.trim() },
+              })
+            )
         );
       }
 
@@ -62,16 +86,6 @@ export const AttributeService = {
     let slug = categoryAttribute.attribute.slug;
     if (data.name && data.name !== categoryAttribute.attribute.name) {
       slug = data.name.toLowerCase().replace(/\s+/g, "-");
-      let counter = 1;
-      const originalSlug = slug;
-
-      while (
-        await prisma.attribute.findFirst({
-          where: { slug, id: { not: categoryAttribute.attributeId } },
-        })
-      ) {
-        slug = `${originalSlug}-${counter++}`;
-      }
     }
 
     await prisma.attribute.update({
@@ -91,16 +105,16 @@ export const AttributeService = {
       where: { id: categoryAttributeId },
       include: { attribute: true },
     });
-    
+
     if (!categoryAttribute) throw new Error("CategoryAttribute not found");
 
-    // Check if this attribute is used in any products
+    // Check if attribute is used in product variants
     const variantAttributes = await prisma.productVariantAttribute.findFirst({
       where: {
         attributeValue: {
-          attributeId: categoryAttribute.attributeId
-        }
-      }
+          attributeId: categoryAttribute.attributeId,
+        },
+      },
     });
 
     if (variantAttributes) {
@@ -108,25 +122,35 @@ export const AttributeService = {
     }
 
     return prisma.$transaction(async (tx) => {
-      // Delete attribute values first
-      await tx.attributeValue.deleteMany({ 
-        where: { attributeId: categoryAttribute.attributeId } 
+      // Remove category-attribute link
+      await tx.categoryAttribute.delete({
+        where: { id: categoryAttributeId },
       });
-      
-      // Delete the category-attribute relationship
-      await tx.categoryAttribute.delete({ 
-        where: { id: categoryAttributeId } 
+
+      // Check if this attribute is still linked to other categories
+      const otherLinks = await tx.categoryAttribute.findMany({
+        where: { attributeId: categoryAttribute.attributeId },
       });
-      
-      // Delete the attribute itself
-      return tx.attribute.delete({ 
-        where: { id: categoryAttribute.attributeId } 
-      });
+
+      if (otherLinks.length === 0) {
+        // Safe to delete values + attribute globally
+        await tx.attributeValue.deleteMany({
+          where: { attributeId: categoryAttribute.attributeId },
+        });
+
+        return tx.attribute.delete({
+          where: { id: categoryAttribute.attributeId },
+        });
+      }
+
+      return { success: true, message: "Unlinked from category but kept globally" };
     });
   },
 
   async addValue(attributeId: string, value: string) {
-    return prisma.attributeValue.create({ data: { attributeId, value: value.trim() } });
+    return prisma.attributeValue.create({
+      data: { attributeId, value: value.trim() },
+    });
   },
 
   async deleteValue(id: string) {

@@ -7,21 +7,117 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Vendor {
+//////////////////////////
+// USERS & ROLES
+//////////////////////////
+model User {
   id        Int       @id @default(autoincrement())
   name      String
-  email     String    @unique
+  email     String?  
+  phone     String?  
   password  String
+  role      UserRole
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  // Optional relations
+  vendorId   Int?   @unique
+  vendor     Vendor?   @relation(fields: [vendorId], references: [id])
+
+  employeeId Int?   @unique
+  employee   Employee? @relation(fields: [employeeId], references: [id])
+
+  customerProfile CustomerProfile?
+
+  @@unique([email, phone])
+
+  @@map("users")
+}
+
+enum UserRole {
+  CUSTOMER
+  VENDOR
+  EMPLOYEE
+  ADMIN
+}
+
+//////////////////////////
+// VENDOR
+//////////////////////////
+model Vendor {
+  id        Int       @id @default(autoincrement())
   storeName String
   avatar    String?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
-  orders    Order[]
+  user      User?
+  sliders   Slider[]
   products  Product[]
+  orders    Order[]
 
   @@map("vendors")
 }
 
+//////////////////////////
+// EMPLOYEE
+//////////////////////////
+model Employee {
+  id          Int       @id @default(autoincrement())
+  designation String?
+  department  String?
+  permissions Json      // JSON array of allowed actions
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @default(now())
+  user        User?
+
+  @@map("employees")
+}
+
+//////////////////////////
+// CUSTOMER PROFILE
+//////////////////////////
+model CustomerProfile {
+  id            Int      @id @default(autoincrement())
+  userId        Int      @unique
+  address       String?
+  phone         String?
+  wallet        Float    @default(0)
+  loyaltyPoints Int      @default(0)
+  user          User     @relation(fields: [userId], references: [id])
+
+  @@map("customer_profiles")
+}
+
+//////////////////////////
+// SLIDERS
+//////////////////////////
+model Slider {
+  id          String   @id @default(uuid())
+  title       String?  
+  subtitle    String?  
+  description String?  
+  imageUrl    String   
+  link        String?  
+  buttonText  String?  
+  buttonLink  String?  
+
+  type        SliderType 
+  vendorId    Int?       // optional, matches Vendor.id
+  vendor      Vendor?     @relation(fields: [vendorId], references: [id])
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+enum SliderType {
+  HOMEPAGE
+  VENDORPAGE
+}
+
+//////////////////////////
+// CATEGORIES & ATTRIBUTES
+//////////////////////////
 model Category {
   id             String                  @id @default(cuid())
   name           String
@@ -48,6 +144,7 @@ model Attribute {
   updatedAt  DateTime            @updatedAt
   values     AttributeValue[]
   categories CategoryAttribute[]
+  productSettings ProductAttributeSetting[]
 
   @@map("attributes")
 }
@@ -88,8 +185,21 @@ model Specification {
   updatedAt  DateTime                    @updatedAt
   categories CategorySpecification[]
   values     ProductSpecificationValue[]
+  options    SpecificationOption[]
 
   @@map("specifications")
+}
+
+model SpecificationOption {
+  id              String        @id @default(cuid())
+  specificationId String
+  value           String
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @default(now())
+  specification   Specification @relation(fields: [specificationId], references: [id], onDelete: Cascade)
+
+  @@unique([specificationId, value])
+  @@map("specification_options")
 }
 
 model CategorySpecification {
@@ -105,19 +215,23 @@ model CategorySpecification {
   @@map("category_specifications")
 }
 
+//////////////////////////
+// PRODUCTS
+//////////////////////////
 model Product {
-  id             String                      @id @default(cuid())
-  name           String
-  description    String?
-  slug           String                      @unique
-  vendorId       Int
-  categoryId     String
-  createdAt      DateTime                    @default(now())
-  updatedAt      DateTime                    @updatedAt
-  specifications ProductSpecificationValue[]
-  variants       ProductVariant[]
-  category       Category                    @relation(fields: [categoryId], references: [id], onDelete: Cascade)
-  vendor         Vendor                      @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  id                String                      @id @default(cuid())
+  name              String
+  description       String?
+  slug              String                      @unique
+  vendorId          Int
+  categoryId        String
+  createdAt         DateTime                    @default(now())
+  updatedAt         DateTime                    @updatedAt
+  specifications    ProductSpecificationValue[]
+  variants          ProductVariant[]
+  attributeSettings ProductAttributeSetting[]
+  category          Category                    @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  vendor            Vendor                      @relation(fields: [vendorId], references: [id], onDelete: Cascade)
 
   @@map("products")
 }
@@ -164,6 +278,21 @@ model ProductSpecificationValue {
   @@map("product_specification_values")
 }
 
+model ProductAttributeSetting {
+  id           String    @id @default(cuid())
+  productId    String
+  attributeId  String
+  isVariant    Boolean   @default(false)
+  product      Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  attribute    Attribute @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, attributeId])
+  @@map("product_attribute_settings")
+}
+
+//////////////////////////
+// ORDERS
+//////////////////////////
 model Order {
   id          Int         @id @default(autoincrement())
   totalAmount Float
@@ -189,6 +318,9 @@ model OrderItem {
   @@map("order_items")
 }
 
+//////////////////////////
+// ENUMS
+//////////////////////////
 enum AttributeType {
   TEXT
   NUMBER

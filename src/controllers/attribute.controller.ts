@@ -3,6 +3,14 @@ import type { Request, Response } from "express";
 import { AttributeService } from "../services/attribute.service.ts";
 
 export const AttributeController = {
+  async getAllGlobal(req: Request, res: Response) {
+    try {
+      const attributes = await AttributeService.getAllGlobal();
+      res.json(attributes);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  },
   async getAll(req: Request, res: Response) {
     try {
       const attributes = await AttributeService.getAll(req.params.categoryId);

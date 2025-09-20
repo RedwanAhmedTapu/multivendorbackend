@@ -1,72 +1,103 @@
 import type { Request, Response } from "express";
 import { ProductService } from "../services/product.service.ts";
-// import redis from "../config/redis.ts";
+import type { AuthRequest } from "../middlewares/auth.middleware.ts";
 
 export const ProductController = {
+  // ======================
+  // Get all products
+  // ======================
   async getAll(req: Request, res: Response) {
     try {
       const products = await ProductService.getAll();
-      // await redis.set("products", JSON.stringify(products), { EX: 60 }); // cache 1 min
-      res.json({ success: true, data: products });
+      return res.json({ success: true, data: products });
     } catch (error: any) {
-      res.status(500).json({ success: false, message: error.message });
+      return res.status(500).json({ success: false, message: error.message || "Failed to fetch products" });
     }
   },
 
+  // ======================
+  // Get product by ID
+  // ======================
   async getById(req: Request, res: Response) {
     try {
-      const id = req.params.id;
+      const { id } = req.params;
       const product = await ProductService.getById(id);
 
       if (!product) {
         return res.status(404).json({ success: false, message: "Product not found" });
       }
 
-      res.json({ success: true, data: product });
+      return res.json({ success: true, data: product });
     } catch (error: any) {
-      res.status(500).json({ success: false, message: error.message });
+      return res.status(500).json({ success: false, message: error.message || "Failed to fetch product" });
     }
   },
 
-  async create(req: Request, res: Response) {
-    try {
-      const product = await ProductService.create(req.body);
-      // await redis.del("products"); // clear cache
-      res.status(201).json({ success: true, data: product });
-    } catch (error: any) {
-      res.status(400).json({ success: false, message: error.message });
-    }
-  },
+  // ======================
+  // Create new product
+  // ======================
+async create( req: AuthRequest, res: Response) {
+  try {
+    const { images, shippingWarranty, ...productData } = req.body;
 
+    const formattedImages = Array.isArray(images)
+      ? images.map((img: any, idx: number) => ({
+          url: typeof img === "string" ? img : img?.url,
+          altText: img?.altText ?? `${productData.name || "Product"} image ${idx + 1}`,
+          sortOrder: img?.sortOrder ?? idx,
+        }))
+      : [];
+
+    const product = await ProductService.create({
+      ...productData,
+      images: formattedImages,
+      shippingWarranty,               
+      userId: req.user?.id,    
+    });
+
+    return res.status(201).json({ success: true, data: product });
+  } catch (error: any) {
+    return res.status(400).json({ success: false, message: error.message || "Failed to create product" });
+  }
+}
+,
+
+  // ======================
+  // Update product
+  // ======================
   async update(req: Request, res: Response) {
     try {
-      const id = req.params.id;
+      const { id } = req.params;
       const product = await ProductService.update(id, req.body);
-      // await redis.del("products");
-      res.json({ success: true, data: product });
+      return res.json({ success: true, data: product });
     } catch (error: any) {
-      res.status(400).json({ success: false, message: error.message });
+      return res.status(400).json({ success: false, message: error.message || "Failed to update product" });
     }
   },
 
+  // ======================
+  // Delete product
+  // ======================
   async remove(req: Request, res: Response) {
     try {
-      const id = req.params.id;
+      const { id } = req.params;
       await ProductService.remove(id);
-      // await redis.del("products");
-      res.json({ success: true, message: "Product deleted" });
+      return res.json({ success: true, message: "Product deleted successfully" });
     } catch (error: any) {
-      res.status(400).json({ success: false, message: error.message });
+      return res.status(400).json({ success: false, message: error.message || "Failed to delete product" });
     }
   },
 
+  // ======================
+  // Filter products
+  // ======================
   async filter(req: Request, res: Response) {
     try {
-      const filters = req.body; // { categoryId, attributes: [], specifications: [] }
-      const products = await ProductService.filterProducts(filters);
-      res.json({ success: true, data: products });
+      const filters = req.body;
+      // const products = await ProductService.filterProducts(filters);
+      // return res.json({ success: true, data: products });
     } catch (error: any) {
-      res.status(400).json({ success: false, message: error.message });
+      return res.status(400).json({ success: false, message: error.message || "Failed to filter products" });
     }
   },
 };

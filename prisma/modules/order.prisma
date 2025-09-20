@@ -1,0 +1,88 @@
+// prisma/modules/order.prisma
+// Orders, items, refunds, invoices
+
+model Order {
+  id          Int         @id @default(autoincrement())
+  totalAmount Float
+  status      OrderStatus
+  vendorId    String
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  items       OrderItem[]
+  vendor      Vendor      @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  shipping    Shipping?
+
+  payments    Payment[]
+  refunds     Refund[]
+
+  @@map("orders")
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PROCESSING
+  PACKAGING
+  SHIPPED
+  DELIVERED
+  RETURNED
+  FAILED_TO_DELIVER
+  CANCELLED
+  REFUNDED
+}
+
+model OrderItem {
+  id        String         @id @default(cuid())
+  orderId   Int
+  variantId String
+  quantity  Int
+  price     Float
+
+  order     Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@map("order_items")
+}
+
+model Payment {
+  id        String   @id @default(cuid())
+  orderId   Int
+  method    String
+  amount    Float
+  status    PaymentStatus @default(PENDING)
+  meta      Json?
+  createdAt DateTime @default(now())
+  paidAt    DateTime?
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("payments")
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+model Refund {
+  id        String   @id @default(cuid())
+  orderId   Int
+  amount    Float
+  reason    String?
+  status    RefundStatus @default(PENDING)
+  createdAt DateTime @default(now())
+  processedAt DateTime?
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  @@map("refunds")
+}
+
+enum RefundStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  REFUNDED
+}

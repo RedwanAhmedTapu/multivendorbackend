@@ -1,0 +1,100 @@
+// prisma/modules/chat.prisma
+// Messages (product messages), vendor/customer conversations & messages, support tickets
+
+// ===========================
+// Product Messages
+// ===========================
+model Message {
+  id         String   @id @default(cuid())
+  senderId   String
+  receiverId String
+  productId  String?
+  content    String
+  createdAt  DateTime @default(now())
+
+  sender     User     @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
+  receiver   User     @relation("ReceivedMessages", fields: [receiverId], references: [id], onDelete: Cascade)
+  product    Product? @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@map("messages")
+}
+
+// ===========================
+// Vendor <-> Customer Conversations
+// ===========================
+model VendorConversation {
+  id         String   @id @default(cuid())
+  vendorId   String
+  userId     String
+  subject    String?
+  isOpen     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  user   User   @relation("UserConversations", fields: [userId], references: [id], onDelete: Cascade)
+
+  messages VendorConversationMessage[]
+
+  @@map("vendor_conversations")
+  @@index([vendorId])
+  @@index([userId])
+}
+
+model VendorConversationMessage {
+  id             String   @id @default(cuid())
+  conversationId String
+  senderId       String
+  content        String
+  metadata       Json?
+  createdAt      DateTime @default(now())
+
+  conversation VendorConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender       User               @relation("VendorMessageSender", fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@map("vendor_conversation_messages")
+  @@index([conversationId])
+  @@index([senderId])
+}
+
+// ===========================
+// Support Tickets
+// ===========================
+model SupportTicket {
+  id        String   @id @default(cuid())
+  userId    String
+  subject   String
+  status    SupportTicketStatus @default(OPEN)
+  priority  SupportPriority     @default(MEDIUM)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User            @relation("SupportTickets", fields: [userId], references: [id], onDelete: Cascade)
+  messages TicketMessage[]
+}
+
+enum SupportTicketStatus {
+  OPEN
+  PENDING
+  RESOLVED
+  CLOSED
+}
+
+enum SupportPriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+model TicketMessage {
+  id        String   @id @default(cuid())
+  ticketId  String
+  senderId  String
+  content   String
+  createdAt DateTime @default(now())
+
+  ticket SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  sender User          @relation("SentTicketMessages", fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@map("ticket_messages")
+}

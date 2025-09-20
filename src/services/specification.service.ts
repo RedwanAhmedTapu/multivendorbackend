@@ -2,6 +2,12 @@
 import { prisma } from "../config/prisma.ts";
 
 export const SpecificationService = {
+   async getAllGlobal() {
+    return prisma.specification.findMany({
+      include: { options: true },
+      orderBy: { name: "asc" },
+    });
+  },
   async getAll(categoryId: string) {
     return prisma.categorySpecification.findMany({
       where: { categoryId },
@@ -17,6 +23,7 @@ export const SpecificationService = {
 
   async create(data: any) {
     const { categoryId, name, type, unit, filterable, required, options = [] } = data;
+    console.log(type)
 
     const slug = name.toLowerCase().replace(/\s+/g, "-");
 

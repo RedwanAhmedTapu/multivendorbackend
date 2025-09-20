@@ -1,0 +1,46 @@
+// prisma/modules/seo.prisma
+// SEO settings, push notifications, referral, surveys
+
+model SeoConfig {
+  id         String   @id @default(cuid())
+  page       String   // e.g., home, product, blog
+  metaTitle  String?
+  metaDesc   String?
+  metaJson   Json?
+  updatedAt  DateTime @updatedAt
+
+  @@map("seo_configs")
+}
+
+model PushNotification {
+  id        String   @id @default(cuid())
+  title     String
+  body      String
+  target    Json?
+  sentAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@map("push_notifications")
+}
+
+model ReferralBonus {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  reward    Json
+  createdAt DateTime @default(now())
+  expiresAt DateTime?
+  isActive  Boolean  @default(true)
+
+  @@map("referral_bonuses")
+}
+
+model Survey {
+  id        String   @id @default(cuid())
+  title     String
+  questions Json
+  active    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("surveys")
+}

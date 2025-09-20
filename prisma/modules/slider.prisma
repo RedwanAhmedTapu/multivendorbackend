@@ -1,0 +1,25 @@
+//////////////////////////
+// SLIDERS
+//////////////////////////
+model Slider {
+  id          String     @id @default(uuid())
+  title       String?
+  subtitle    String?
+  description String?
+  imageUrl    String
+  link        String?
+  buttonText  String?
+  buttonLink  String?
+  type        SliderType
+
+  vendorId String?
+  vendor   Vendor?    @relation(fields: [vendorId], references: [id])
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+enum SliderType {
+  HOMEPAGE
+  VENDORPAGE
+}

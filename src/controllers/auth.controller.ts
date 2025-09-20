@@ -1,59 +1,77 @@
 import type { Request, Response } from "express";
 import * as authService from "../services/auth.service.ts";
+import * as verificationService from "../services/verification.service.ts";
 import jwt from "jsonwebtoken";
 
-const REFRESH_TOKEN_SECRET =
-  process.env.REFRESH_TOKEN_SECRET || "refresh-secret";
+const REFRESH_TOKEN_SECRET = process.env.REFRESH_TOKEN_SECRET || "refresh-secret";
 
 // ------------------- Register -------------------
 export const register = async (req: Request, res: Response) => {
   try {
-    const {
-      name,
-      email,
-      phone,
-      password,
-      role,
-      storeName,
-      designation,
-      department,
-    } = req.body;
+    const { email, phone } = req.body;
+    if (!email && !phone)
+      return res.status(400).json({ message: "Email or phone required" });
 
-    // Require at least email or phone
-    if (!email && !phone) {
-      return res.status(400).json({
-        message: "Either email or phone is required for registration",
-      });
+    if (email) {
+      await verificationService.sendEmailVerification(email);
+      return res.json({ message: "Check your email to verify account" });
     }
+    if (phone) {
+      await verificationService.sendOtp(phone);
+      return res.json({ message: "OTP sent to phone" });
+    }
+  } catch (err: any) {
+    res.status(400).json({ message: err.message });
+  }
+};
 
-    // Call service to register user
+// ------------------- Verify Email -------------------
+export const verifyEmail = async (req: Request, res: Response) => {
+  try {
+    const { token, name, password, role, storeName, designation, department } = req.body;
+
+    const email = await verificationService.verifyEmail(token);
+    if (!email) return res.status(400).json({ message: "Invalid or expired token" });
+
     const user = await authService.registerUser({
       name,
       email,
-      phone,
       password,
       role,
       storeName,
       designation,
       department,
+      isVerified: true,
     });
 
-    res.status(201).json({
-      message: "User registered successfully",
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        phone: user.phone,
-        role: user.role,
-      },
+    res.json({ message: "Email verified & account created", user });
+  } catch (err: any) {
+    res.status(400).json({ message: err.message });
+  }
+};
+
+// ------------------- Verify OTP -------------------
+export const verifyOtp = async (req: Request, res: Response) => {
+  try {
+    const { phone, otp, name, password, role, storeName, designation, department } = req.body;
+
+    const verifiedPhone = await verificationService.verifyOtp(phone, otp);
+    if (!verifiedPhone) return res.status(400).json({ message: "Invalid or expired OTP" });
+
+    const user = await authService.registerUser({
+      name,
+      phone: verifiedPhone,
+      password,
+      role,
+      storeName,
+      designation,
+      department,
+      isVerified: true,
     });
-  } catch (error: any) {
-    // Handle unique constraint errors
-    if (error.code === "P2002") {
-      return res.status(400).json({ message: "Email or phone already exists" });
-    }
-    res.status(400).json({ message: error.message });
+
+    res.json({ message: "Phone verified & account created", user });
+  } catch (err: any) {
+    res.status(400).json({ message: err.message });
   }
 };
 
@@ -61,62 +79,39 @@ export const register = async (req: Request, res: Response) => {
 export const login = async (req: Request, res: Response) => {
   try {
     const { email, phone, password } = req.body;
+    const { user, accessToken, refreshToken } = await authService.loginUser(email, phone, password);
 
-    if (!email && !phone) {
-      return res.status(400).json({ message: "Email or phone is required" });
-    }
-
-    const { user, accessToken, refreshToken } = await authService.loginUser(
-      email,
-      phone,
-      password
-    );
-
-    // Store refresh token in HTTP-only cookie
     res.cookie("refreshToken", refreshToken, {
       httpOnly: true,
-      secure: false, // false in development
-      sameSite: "strict", // or "strict" if you want stricter cross-site rules
-      maxAge: 24 * 60 * 60 * 1000, // 1 day
+      sameSite: "lax",
+      secure: false,
+      maxAge: 24 * 60 * 60 * 1000,
     });
 
-    res.json({
-      message: "Login successful",
-      accessToken,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        phone: user.phone,
-        role: user.role,
-      },
-    });
-  } catch (error: any) {
-    res.status(400).json({ message: error.message });
+    res.json({ message: "Login successful", accessToken, user });
+  } catch (err: any) {
+    res.status(400).json({ message: err.message });
   }
 };
 
 // ------------------- Refresh Token -------------------
 export const refresh = (req: Request, res: Response) => {
   const token = req.cookies.refreshToken;
-
-  if (!token) {
-    return res.status(401).json({ message: "Refresh token not found" });
-  }
-
-  if (!REFRESH_TOKEN_SECRET) {
-    return res.status(500).json({ message: "Refresh token secret not set" });
-  }
+  if (!token) return res.status(401).json({ message: "Refresh token not found" });
 
   jwt.verify(token, REFRESH_TOKEN_SECRET, (err: any, payload: any) => {
     if (err) return res.status(403).json({ message: "Invalid refresh token" });
 
     const accessToken = jwt.sign(
-      { id: payload.id },
+      {
+        id: payload.id,
+        role: payload.role,
+        vendorId: payload.vendorId ?? null,
+        emailorphone: payload.emailorphone ?? null,
+      },
       process.env.ACCESS_TOKEN_SECRET || "access-secret",
       { expiresIn: "1h" }
     );
-
     res.json({ accessToken });
   });
 };

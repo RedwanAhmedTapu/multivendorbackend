@@ -1,0 +1,136 @@
+// prisma/modules/vendor.prisma
+// Vendors, commissions, payouts, offers, flags, performance, messaging & settings
+
+model Vendor {
+  id        String   @id @default(cuid())
+  storeName String
+  avatar    String?
+  status    VendorStatus @default(PENDING)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  currentCommissionRate Float? @default(0)
+
+  // relations
+  user              User?
+  employees         Employee[]
+  sliders           Slider[]
+  products          Product[]
+  orders            Order[]
+  messagingSetting  VendorMessagingSetting?
+  commissions       VendorCommission[]
+  payouts           VendorPayout[]
+  monthlyCharges    VendorMonthlyCharge[]
+  offers            VendorOffer[]
+  flags             VendorFlag[]
+  performance       VendorPerformance?
+  conversations     VendorConversation[]
+
+  @@map("vendors")
+}
+
+enum VendorStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+}
+
+model VendorCommission {
+  id            String   @id @default(cuid())
+  vendorId      String
+  rate          Float
+  note          String?
+  effectiveFrom DateTime @default(now())
+  effectiveTo   DateTime?
+  createdAt     DateTime @default(now())
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  @@map("vendor_commissions")
+}
+
+model VendorPayout {
+  id        String   @id @default(cuid())
+  vendorId  String
+  amount    Float
+  status    PayoutStatus @default(PENDING)
+  method    String?
+  period    String?
+  note      String?
+  createdAt DateTime @default(now())
+  paidAt    DateTime?
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  @@map("vendor_payouts")
+}
+
+enum PayoutStatus {
+  PENDING
+  PAID
+  FAILED
+}
+
+model VendorMonthlyCharge {
+  id            String   @id @default(cuid())
+  vendorId      String
+  amount        Float
+  description   String?
+  effectiveFrom DateTime @default(now())
+  effectiveTo   DateTime?
+  createdAt     DateTime @default(now())
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  @@map("vendor_monthly_charges")
+}
+
+model VendorOffer {
+  id        String   @id @default(cuid())
+  vendorId  String
+  title     String
+  details   String?
+  validFrom DateTime
+  validTo   DateTime?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  @@map("vendor_offers")
+}
+
+model VendorFlag {
+  id        String   @id @default(cuid())
+  vendorId  String
+  reason    String
+  severity  Int      @default(1)
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  @@map("vendor_flags")
+}
+
+model VendorPerformance {
+  id                 String  @id @default(cuid())
+  vendorId           String  @unique
+  totalSales         Float   @default(0)
+  totalOrders        Int     @default(0)
+  fulfillmentRatePct Float   @default(100)
+  avgRating          Float   @default(0)
+  lastCalculatedAt   DateTime?
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  @@map("vendor_performance")
+}
+
+model VendorMessagingSetting {
+  id          String   @id @default(cuid())
+  vendorId    String   @unique
+  vendor      Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  isAvailable Boolean   @default(true)
+  autoReply   String?
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@map("vendor_messaging_settings")
+}

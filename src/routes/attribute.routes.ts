@@ -1,9 +1,9 @@
-// routes/attributes.ts
 import { Router } from "express";
 import { AttributeController } from "../controllers/attribute.controller.ts";
 
 const router = Router();
 
+router.get("/", AttributeController.getAllGlobal);   
 router.get("/:categoryId", AttributeController.getAll);
 router.post("/", AttributeController.create);
 router.put("/:id", AttributeController.update);

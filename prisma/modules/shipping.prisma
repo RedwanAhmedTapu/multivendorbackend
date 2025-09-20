@@ -1,0 +1,68 @@
+// prisma/modules/shipping.prisma
+// Shipping, delivery personnel, routes, couriers
+
+model Shipping {
+  id         String   @id @default(cuid())
+  orderId    Int      @unique
+  order      Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  address    String
+  city       String
+  postalCode String
+  country    String
+  status     ShippingStatus @default(PENDING)
+  trackingNo String?
+  courier    String?
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("shippings")
+}
+
+enum ShippingStatus {
+  PENDING
+  DISPATCHED
+  IN_TRANSIT
+  DELIVERED
+  RETURNED
+}
+
+model DeliveryPerson {
+  id        String  @id @default(cuid())
+  userId    String? // link to User if exists
+  name      String
+  phone     String
+  isActive  Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  collections DeliveryCollection[]
+  payouts     DeliveryPayout[]
+
+  @@map("delivery_persons")
+}
+
+model DeliveryCollection {
+  id              String   @id @default(cuid())
+  deliveryPersonId String
+  orderId         Int
+  amountCollected Float
+  createdAt       DateTime @default(now())
+
+  deliveryPerson DeliveryPerson @relation(fields: [deliveryPersonId], references: [id], onDelete: Cascade)
+  order          Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  @@map("delivery_collections")
+}
+
+model DeliveryPayout {
+  id               String   @id @default(cuid())
+  deliveryPersonId String
+  amount           Float
+  status           PayoutStatus @default(PENDING)
+  createdAt        DateTime @default(now())
+  paidAt           DateTime?
+
+  deliveryPerson DeliveryPerson @relation(fields: [deliveryPersonId], references: [id], onDelete: Cascade)
+  @@map("delivery_payouts")
+}

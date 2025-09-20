@@ -2,6 +2,12 @@
 import { prisma } from "../config/prisma.ts";
 
 export const AttributeService = {
+  async getAllGlobal() {
+    return prisma.attribute.findMany({
+      include: { values: true },
+      orderBy: { name: "asc" },
+    });
+  },
   async getAll(categoryId: string) {
     return prisma.categoryAttribute.findMany({
       where: { categoryId },

@@ -1,0 +1,34 @@
+// prisma/modules/wallet.prisma
+// Wallet, loyalty transactions, customer wallet ledger
+
+model WalletTransaction {
+  id         String   @id @default(cuid())
+  userId     String
+  amount     Float
+  type       WalletTxType
+  meta       Json?
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("wallet_transactions")
+}
+
+enum WalletTxType {
+  CREDIT
+  DEBIT
+  REFUND
+  ADJUSTMENT
+}
+
+model LoyaltyTransaction {
+  id         String   @id @default(cuid())
+  userId     String
+  points     Int
+  reason     String?
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("loyalty_transactions")
+}

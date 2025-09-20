@@ -1,0 +1,43 @@
+// prisma/modules/settings.prisma
+// Business settings, payment gateways, currencies, backups, file manager meta
+
+model Setting {
+  id    String @id @default(cuid())
+  key   String @unique
+  value Json
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
+}
+
+model PaymentGateway {
+  id        String   @id @default(cuid())
+  provider  String
+  config    Json
+  enabled   Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("payment_gateways")
+}
+
+model Currency {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  symbol    String
+  rateToBase Float   @default(1) // conversion
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@map("currencies")
+}
+
+model BackupJob {
+  id        String   @id @default(cuid())
+  type      String
+  status    String
+  meta      Json?
+  createdAt DateTime @default(now())
+  finishedAt DateTime?
+  @@map("backup_jobs")
+}

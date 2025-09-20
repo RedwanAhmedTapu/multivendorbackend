@@ -3,6 +3,14 @@ import type { Request, Response } from "express";
 import { SpecificationService } from "../services/specification.service.ts";
 
 export const SpecificationController = {
+  async getAllGlobal(req: Request, res: Response) {
+    try {
+      const specifications = await SpecificationService.getAllGlobal();
+      res.json(specifications);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  },
   async getAll(req: Request, res: Response) {
     try {
       const specifications = await SpecificationService.getAll(req.params.categoryId);

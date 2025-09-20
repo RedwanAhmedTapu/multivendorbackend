@@ -1,0 +1,127 @@
+// prisma/modules/user.prisma
+// Users, roles, employees, customer profile, audit logs, wallet/loyalty relations
+
+model User {
+  id          String   @id @default(cuid())
+  name        String?
+  email       String? 
+  phone       String?
+  password    String
+  role        UserRole
+  isActive    Boolean   @default(true)
+  isVerified  Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // Optional owner relationships
+  vendorId    String?   
+  vendor      Vendor?   @relation(fields: [vendorId], references: [id])
+  
+  employeeId  String?
+  employee    Employee? @relation("UserEmployee")
+
+  // Customer profile
+  customerProfile CustomerProfile?
+
+  // Relations
+  createdEmployees Employee[] @relation("EmployeeCreator")
+  approvedProducts Product[]  @relation("ProductApprover")
+  auditLogs        AuditLog[]
+  reviews          Review[]
+  // Messaging
+  sentMessages         Message[]                 @relation("SentMessages", references: [id])
+  receivedMessages     Message[]                 @relation("ReceivedMessages", references: [id])
+  sentVendorMessages   VendorConversationMessage[] @relation("VendorMessageSender", references: [id])
+  
+  // Vendor conversations (customer side)
+  vendorConversations VendorConversation[] @relation("UserConversations", references: [id])
+  
+  
+  
+  // Support tickets
+  supportTickets     SupportTicket[] @relation("SupportTickets")
+  sentTicketMessages TicketMessage[]  @relation("SentTicketMessages")
+  
+  // Blog posts
+  blogPosts BlogPost[]
+  
+  // Wallet & loyalty
+  walletTransactions  WalletTransaction[]
+  loyaltyTransactions LoyaltyTransaction[]
+
+  @@unique([email, phone])
+  @@map("users")
+}
+
+enum UserRole {
+  CUSTOMER
+  VENDOR
+  EMPLOYEE
+  ADMIN
+}
+
+// ===========================
+// Employee
+// ===========================
+model Employee {
+  id          String   @id @default(cuid())
+  designation String?
+  department  String?
+  permissions Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // One-to-one relation to User
+  userId String? @unique
+  user   User?   @relation("UserEmployee", fields: [userId], references: [id])
+
+  // Creator relation
+  createdById String?
+  createdBy   User? @relation("EmployeeCreator", fields: [createdById], references: [id])
+
+  vendorId String?
+  vendor   Vendor? @relation(fields: [vendorId], references: [id])
+
+  isActive Boolean @default(true)
+
+  @@map("employees")
+}
+
+
+
+
+
+
+// ===========================
+// Customer Profile
+// ===========================
+model CustomerProfile {
+  id            String   @id @default(cuid())
+  userId        String   @unique
+  address       String?
+  phone         String?
+  wallet        Float    @default(0)
+  loyaltyPoints Int      @default(0)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("customer_profiles")
+}
+
+// ===========================
+// Audit Log
+// ===========================
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+
+  action    String
+  entity    String
+  entityId  String?
+  metadata  Json?
+
+  createdAt DateTime @default(now())
+
+  @@map("audit_logs")
+}

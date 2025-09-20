@@ -1,0 +1,25 @@
+// prisma/modules/analytics.prisma
+// Reports, basic metrics, activity logs (detailed)
+
+model Report {
+  id        String   @id @default(cuid())
+  key       String   // e.g., sales_daily_2025-09-01
+  payload   Json
+  createdAt DateTime @default(now())
+
+  @@map("reports")
+}
+
+model ActivityLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  action    String
+  entity    String?
+  entityId  String?
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("activity_logs")
+}

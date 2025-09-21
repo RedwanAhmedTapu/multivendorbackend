@@ -1,6 +1,6 @@
 import { Router } from "express";
 import multer from "multer";
-import { BulkImportController } from "../controllers/bulkimport.controller.ts";
+import { BulkImportController } from "../controllers/bulkImport.controller.ts";
 
 const upload = multer({ dest: "uploads/" });
 const router = Router();

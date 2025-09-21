@@ -1,5 +1,5 @@
 import type { Request, Response } from "express";
-import { BulkImportService } from "../services/bulkimport.service.ts";
+import { BulkImportService } from "../services/bulkImport.service.ts";
 
 export const BulkImportController = {
   async upload(req: Request, res: Response) {

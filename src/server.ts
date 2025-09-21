@@ -20,6 +20,7 @@ import customerRoutes from "./routes/customer.routes.ts";
 import orderRoutes from "./routes/order.routes.ts";
 import payoutRoutes from "./routes/payout.routes.ts";
 import chatRoutes from "./routes/chat.routes.ts";
+import TermsRoutes from "./routes/terms.routes.ts";
 import { ChatSocket } from "./socket/chatSocket.ts";
 
 // Fix __dirname in ES Module
@@ -70,6 +71,8 @@ app.use("/api/customermanagement", customerRoutes);
 app.use("/api/order", orderRoutes);
 app.use("/api/payout", payoutRoutes);
 app.use("/api/chat", chatRoutes);
+app.use("/api/terms", TermsRoutes);
+
 
 // ✅ Socket.io handlers
 new ChatSocket(io);

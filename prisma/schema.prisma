@@ -49,9 +49,14 @@ model User {
   walletTransactions  WalletTransaction[]
   loyaltyTransactions LoyaltyTransaction[]
 
+// Terms and conditions relations
+  createdTerms    TermsAndConditions[] @relation("TermsCreator")
+  updatedTerms    TermsAndConditions[] @relation("TermsUpdater")
+
   // NEW: Chat relations (replacing the old ones)
   conversationParticipants ConversationParticipant[] // User can be in many conversations
   sentMessages            Message[]                  // Messages user sent
+
 
   @@unique([email, phone])
   @@map("users")
@@ -1132,4 +1137,48 @@ model Slider {
 enum SliderType {
   HOMEPAGE
   VENDORPAGE
+}
+
+model TermsAndConditions {
+  id          String   @id @default(cuid())
+  title       String
+  slug        String   @unique
+  content     String   // Rich text content from editor
+  version     String   // e.g., "1.0", "2.1" 
+  isActive    Boolean  @default(false) // Only one can be active at a time
+  isPublished Boolean  @default(false)
+  
+  // Admin who created/updated
+  createdById String?
+  createdBy   User?    @relation("TermsCreator", fields: [createdById], references: [id])
+  updatedById String?
+  updatedBy   User?    @relation("TermsUpdater", fields: [updatedById], references: [id])
+  
+  // Timestamps
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  publishedAt DateTime?
+  
+  // Optional: Categorize different types of terms
+  type        TermsType @default(GENERAL)
+  
+  // Optional: Language support
+  language    String   @default("en")
+  
+  // Optional: Metadata
+  metaTitle   String?
+  metaDesc    String?
+  
+  @@map("terms_and_conditions")
+  @@index([isActive, isPublished])
+  @@index([type, isActive])
+}
+
+enum TermsType {
+  GENERAL           // General terms and conditions
+  PRIVACY_POLICY    // Privacy policy
+  VENDOR_AGREEMENT  // Vendor specific terms
+  CUSTOMER_TERMS    // Customer specific terms
+  DELIVERY_TERMS    // Delivery terms
+  RETURN_POLICY     // Return and refund policy
 }

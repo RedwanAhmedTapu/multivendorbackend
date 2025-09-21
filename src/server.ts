@@ -30,23 +30,25 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const server = createServer(app);
 
-// ✅ Socket.io setup
+const allowedOrigin = process.env.BASE_URL || "http://localhost:3000";
+
+// Express CORS
+app.use(
+  cors({
+    origin: allowedOrigin,
+    credentials: true,
+  })
+);
+
+// Socket.io CORS
 const io = new Server(server, {
   cors: {
-    origin: process.env.BASE_URL || "http://localhost:3000",
+    origin: allowedOrigin,
     credentials: true,
     methods: ["GET", "POST"],
   },
 });
 
-// ✅ Express middlewares
-app.use(express.json({ limit: "10mb" }));
-app.use(
-  cors({
-    origin: process.env.BASE_URL || "http://localhost:3000",
-    credentials: true,
-  })
-);
 
 // Optional: rate limiting
 // const limiter = rateLimit({

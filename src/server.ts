@@ -2,6 +2,8 @@
 (BigInt.prototype as any).toJSON = function() {
   return this.toString();
 };
+import 'dotenv/config';
+
 import express from "express";
 import cors from "cors";
 import path from "path";
@@ -9,7 +11,6 @@ import { fileURLToPath } from "url";
 import rateLimit from "express-rate-limit";
 import { createServer } from "http";
 import { Server } from "socket.io";
-import axios from "axios";
 
 // Import routes
 import authRoutes from "./routes/auth.routes.ts";
@@ -57,7 +58,6 @@ app.use(
     credentials: true,
   })
 );
-
 // Socket.io CORS
 const io = new Server(server, {
   cors: {

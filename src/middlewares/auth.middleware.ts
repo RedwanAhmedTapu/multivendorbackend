@@ -13,7 +13,6 @@ export interface AuthRequest extends Request {
     email?: string | null;
     name?: string | null;
     vendorId?: string | null;
-    employeeId?: string | null;
   };
 }
 
@@ -48,7 +47,6 @@ export const authenticateUser = async (
         email: true,
         name: true,
         vendorId: true,
-        employeeId: true,
       },
     });
 
@@ -63,7 +61,6 @@ export const authenticateUser = async (
       email: user.email,
       name: user.name,
       vendorId: user.vendorId ?? null,
-      employeeId: user.employeeId ?? null,
     };
 
     next();
@@ -77,6 +74,7 @@ export const authenticateUser = async (
 export const authorizeRoles = (...roles: string[]) => {
   return (req: AuthRequest, res: Response, next: NextFunction) => {
     if (!req.user || !roles.includes(req.user.role)) {
+      console.log(req.user)
       return res
         .status(403)
         .json({ message: "Forbidden: insufficient permissions" });

@@ -1,101 +1,103 @@
 // services/customerService.ts
-// services/customerService.ts
-import type {  CustomerFilter, ExportOptions, ComplaintStatus, ComplaintPriority,WalletTransactionType,LoyaltyTransactionType } from '@/types/customer.types.ts';
+import type { 
+  CustomerFilter, 
+  ExportOptions, 
+  ComplaintStatus, 
+  ComplaintPriority,
+  WalletTransactionType,
+  LoyaltyTransactionType 
+} from '@/types/customer.types.ts';
 import pkg from '@prisma/client';
 import type { CustomerProfile } from '@/types/customer.types.ts';
+import * as XLSX from 'xlsx';
 
-const { PrismaClient, UserRole} = pkg;
-
+const { PrismaClient, UserRole } = pkg;
 const prisma = new PrismaClient();
-
-
 
 export class CustomerService {
   // Get all customers with filtering and pagination
- async getCustomers(filters: CustomerFilter) {
-  const {
-    status = 'all',
-    search,
-    minWallet,
-    maxWallet,
-    minLoyalty,
-    maxLoyalty,
-    startDate,
-    endDate,
-    page = 1,
-    limit = 10,
-    sortBy = 'createdAt',
-    sortOrder = 'desc'
-  } = filters;
+  async getCustomers(filters: CustomerFilter) {
+    const {
+      status = 'all',
+      search,
+      minWallet,
+      maxWallet,
+      minLoyalty,
+      maxLoyalty,
+      startDate,
+      endDate,
+      page = 1,
+      limit = 10,
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
+    } = filters;
 
-  const skip = (page - 1) * limit;
+    const skip = (page - 1) * limit;
 
-  const customerProfileFilter: any = {};
-  if (minWallet !== undefined || maxWallet !== undefined) {
-    customerProfileFilter.wallet = {
-      ...(minWallet !== undefined && { gte: minWallet }),
-      ...(maxWallet !== undefined && { lte: maxWallet })
-    };
-  }
-  if (minLoyalty !== undefined || maxLoyalty !== undefined) {
-    customerProfileFilter.loyaltyPoints = {
-      ...(minLoyalty !== undefined && { gte: minLoyalty }),
-      ...(maxLoyalty !== undefined && { lte: maxLoyalty })
-    };
-  }
-
-  const where: any = {
-    role: UserRole.CUSTOMER,
-    ...(status !== 'all' && {
-      isActive: status === 'active' ? true : false,
-      isBlocked: status === 'blocked' ? true : false
-    }),
-    ...(search && {
-      OR: [
-        { name: { contains: search, mode: 'insensitive' } },
-        { email: { contains: search, mode: 'insensitive' } },
-        { phone: { contains: search, mode: 'insensitive' } }
-      ]
-    }),
-    ...(Object.keys(customerProfileFilter).length > 0 && { customerProfile: customerProfileFilter }),
-    ...((startDate || endDate) && {
-      createdAt: {
-        ...(startDate && { gte: startDate }),
-        ...(endDate && { lte: endDate })
-      }
-    })
-  };
-
-  const [customers, total] = await Promise.all([
-    prisma.user.findMany({
-      where,
-      include: {
-        customerProfile: true,
-        _count: {
-          select: {
-            reviews: true,
-            supportTickets: true
-          }
-        }
-      },
-      orderBy: { [sortBy]: sortOrder },
-      skip,
-      take: limit
-    }),
-    prisma.user.count({ where })
-  ]);
-
-  return {
-    data: customers,
-    pagination: {
-      total,
-      page,
-      limit,
-      pages: Math.ceil(total / limit)
+    const customerProfileFilter: any = {};
+    if (minWallet !== undefined || maxWallet !== undefined) {
+      customerProfileFilter.wallet = {
+        ...(minWallet !== undefined && { gte: minWallet }),
+        ...(maxWallet !== undefined && { lte: maxWallet })
+      };
     }
-  };
-}
+    if (minLoyalty !== undefined || maxLoyalty !== undefined) {
+      customerProfileFilter.loyaltyPoints = {
+        ...(minLoyalty !== undefined && { gte: minLoyalty }),
+        ...(maxLoyalty !== undefined && { lte: maxLoyalty })
+      };
+    }
 
+    const where: any = {
+      role: UserRole.CUSTOMER,
+      ...(status !== 'all' && {
+        // Only use isActive field since isBlocked doesn't exist
+        isActive: status === 'active' ? true : false
+      }),
+      ...(search && {
+        OR: [
+          { name: { contains: search, mode: 'insensitive' } },
+          { email: { contains: search, mode: 'insensitive' } },
+          { phone: { contains: search, mode: 'insensitive' } }
+        ]
+      }),
+      ...(Object.keys(customerProfileFilter).length > 0 && { customerProfile: customerProfileFilter }),
+      ...((startDate || endDate) && {
+        createdAt: {
+          ...(startDate && { gte: startDate }),
+          ...(endDate && { lte: endDate })
+        }
+      })
+    };
+
+    const [customers, total] = await Promise.all([
+      prisma.user.findMany({
+        where,
+        include: {
+          customerProfile: true,
+          _count: {
+            select: {
+              reviews: true,
+            }
+          }
+        },
+        orderBy: { [sortBy]: sortOrder },
+        skip,
+        take: limit
+      }),
+      prisma.user.count({ where })
+    ]);
+
+    return {
+      data: customers,
+      pagination: {
+        total,
+        page,
+        limit,
+        pages: Math.ceil(total / limit)
+      }
+    };
+  }
 
   // Get customer by ID
   async getCustomerById(id: string) {
@@ -114,37 +116,34 @@ export class CustomerService {
             }
           }
         },
-        supportTickets: {
-          include: {
-            messages: true
-          }
-        },
         walletTransactions: true,
         loyaltyTransactions: true
       }
     });
   }
 
-  // Block/unblock customer
-async toggleCustomerBlock(id: string, block: boolean, reason?: string) {
-  console.log(block)
-  return prisma.user.update({
-    where: { id, role: UserRole.CUSTOMER },
-    data: {
-      isActive: block, // block=true → inactive, block=false → active
-      activityLogs: {
-        create: {
-          action: block ? "ACCOUNT_BLOCKED" : "ACCOUNT_UNBLOCKED",
-          entity: "USER",
-          entityId: id,
-          meta: { reason },
+  // Block/unblock customer - Fixed to work with your schema
+  async toggleCustomerBlock(id: string, block: boolean, reason?: string) {
+    // In your schema, isActive controls the account status
+    // block = true means activate, block = false means deactivate
+    const isActive = block;
+    
+    return prisma.user.update({
+      where: { id, role: UserRole.CUSTOMER },
+      data: {
+        isActive,
+        activityLogs: {
+          create: {
+            action: isActive ? "ACCOUNT_UNBLOCKED" : "ACCOUNT_BLOCKED",
+            entity: "USER",
+            entityId: id,
+            meta: { reason },
+          },
         },
+        updatedAt: new Date(),
       },
-      updatedAt: new Date(),
-    },
-  });
-}
-
+    });
+  }
 
   // Update customer profile
   async updateCustomerProfile(id: string, data: Partial<CustomerProfile>) {
@@ -426,17 +425,23 @@ async toggleCustomerBlock(id: string, block: boolean, reason?: string) {
     });
   }
 
-  // Export customers
+  // Export customers to Excel with proper formatting
   async exportCustomers(options: ExportOptions) {
     const { format, fields, filters } = options;
-    const customers = await this.getCustomers({ ...filters, limit: 10000 });
+    
+    // Get all customers without pagination
+    const customersResult = await this.getCustomers({ 
+      ...filters, 
+      limit: 10000,
+      page: 1 
+    });
 
     // Transform data based on selected fields
-    const data = customers.data.map(customer => {
+    const data = customersResult.data.map(customer => {
       const result: any = {};
       fields.forEach(field => {
         if (field.includes('.')) {
-          // Handle nested fields like 'profile.wallet'
+          // Handle nested fields like 'customerProfile.wallet'
           const [parent, child] = field.split('.');
           result[field] = customer[parent]?.[child];
         } else {
@@ -446,6 +451,54 @@ async toggleCustomerBlock(id: string, block: boolean, reason?: string) {
       return result;
     });
 
-    return { data, format };
+    // Create workbook and worksheet
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(data);
+
+    // Auto-adjust column widths
+    const colWidths = fields.map(field => {
+      const maxLength = Math.max(
+        field.length,
+        ...data.map(row => {
+          const value = row[field];
+          return value ? value.toString().length : 0;
+        })
+      );
+      return { wch: Math.min(Math.max(maxLength, 10), 50) }; // Min 10, Max 50 chars
+    });
+
+    ws['!cols'] = colWidths;
+
+    // Add headers with styling
+    const headerStyle = {
+      font: { bold: true, color: { rgb: "FFFFFF" } },
+      fill: { fgColor: { rgb: "2C5F2D" } }, // Green background
+      alignment: { horizontal: "center" as const }
+    };
+
+    // Apply header styling
+    const range = XLSX.utils.decode_range(ws['!ref'] || 'A1:Z1');
+    for (let C = range.s.c; C <= range.e.c; ++C) {
+      const cellAddress = XLSX.utils.encode_cell({ r: range.s.r, c: C });
+      if (!ws[cellAddress]) continue;
+      
+      ws[cellAddress].s = headerStyle;
+    }
+
+    // Add worksheet to workbook
+    XLSX.utils.book_append_sheet(wb, ws, 'Customers');
+
+    // Generate buffer
+    const excelBuffer = XLSX.write(wb, { 
+      bookType: 'xlsx', 
+      type: 'buffer',
+      compression: true 
+    });
+
+    return {
+      data: excelBuffer,
+      format: 'excel',
+      fileName: `customers-export-${new Date().toISOString().split('T')[0]}.xlsx`
+    };
   }
 }

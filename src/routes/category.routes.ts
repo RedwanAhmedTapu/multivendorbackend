@@ -1,18 +1,52 @@
 import { Router } from "express";
 import { CategoryController } from "../controllers/category.controller.ts";
-import { imageUpload } from "../middlewares/upload.middleware.ts";
+import { categoryimageUpload } from "../middlewares/up.middleware.ts";
+import {
+  authenticateUser,
+  authorizeRoles,
+} from "../middlewares/auth.middleware.ts";
 
 const router = Router();
 
+// ✅ Get all categories
 router.get("/", CategoryController.getAll);
+
+// ✅ Get category by ID
 router.get("/:id", CategoryController.getById);
 
-// Use dynamic middleware for single image upload
-router.post("/", imageUpload("category"), CategoryController.create);
-router.put("/:id", imageUpload("category"), CategoryController.update);
-router.delete("/:id", CategoryController.remove);
+// ✅ Create category (with image upload)
+router.post(
+  "/",
+  authenticateUser,
+  authorizeRoles("ADMIN"),
+  categoryimageUpload("category", "ADMIN", undefined, 1, "image"), // ✅ expects "image"
+  CategoryController.create
+);
 
-// Upload image only (get URL without DB update)
-router.post("/upload-image", imageUpload("category"), CategoryController.uploadImage);
+// ✅ Update category (with optional image upload)
+router.put(
+  "/:id",
+  authenticateUser,
+  authorizeRoles("ADMIN"),
+  categoryimageUpload("category", "ADMIN", undefined, 1, "image"), // ✅ expects "image"
+  CategoryController.update
+);
+
+// ✅ Delete category
+router.delete(
+  "/:id",
+  authenticateUser,
+  authorizeRoles("ADMIN"),
+  CategoryController.remove
+);
+
+// ✅ Upload image only (for pre-uploaded image URLs)
+router.post(
+  "/upload-image",
+  authenticateUser,
+  authorizeRoles("ADMIN"),
+  categoryimageUpload("category", "ADMIN", undefined, 1, "image"), // ✅ expects "image"
+  CategoryController.uploadImage
+);
 
 export default router;

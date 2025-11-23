@@ -5,6 +5,11 @@ import {
   VendorStatus,
   PayoutStatus,
   OrderStatus,
+  DocumentType,
+  DocumentVerificationStatus,
+  SubscriptionPlan,
+  VerificationStatus,
+  AccountType,
 } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import type {
@@ -23,12 +28,24 @@ import type {
   BulkCommissionUpdateRequest,
   BulkMonthlyChargeRequest,
   VendorExportOptions,
+  VendorPersonalInfoRequest,
+  VendorAddressRequest,
+  VendorBankInfoRequest,
+  VendorDocumentRequest,
+  VendorSubscriptionRequest,
+  VendorOnboardingStatus,
+  VendorVerificationRequest,
+  CompleteVendorProfile,
 } from "@/types/vendor.types.ts";
+import { deleteFromR2 } from "../lib/cloudflare-r2.ts";
 
 const prisma = new PrismaClient();
 
 export class VendorService {
-  // Vendor CRUD Operations
+  // ================================
+  // VENDOR CRUD OPERATIONS
+  // ================================
+
   async createVendor(data: CreateVendorRequest) {
     const hashedPassword = await bcrypt.hash(data.password, 10);
 
@@ -43,13 +60,56 @@ export class VendorService {
         },
       });
 
-      // Create vendor
+      // Create vendor with all related records
       const vendor = await tx.vendor.create({
         data: {
           storeName: data.storeName,
           avatar: data.avatar,
+          accountType: data.accountType || AccountType.INDIVIDUAL,
           user: {
             connect: { id: user.id },
+          },
+          // Initialize related records
+          personalInfo: data.personalInfo
+            ? {
+                create: {
+                  idNumber: data.personalInfo.idNumber,
+                  idName: data.personalInfo.idName,
+                  companyName: data.personalInfo.companyName,
+                  businessRegNo: data.personalInfo.businessRegNo,
+                  taxIdNumber: data.personalInfo.taxIdNumber,
+                },
+              }
+            : undefined,
+          pickupAddress: data.address
+            ? {
+                create: {
+                  detailsAddress: data.address.detailsAddress,
+                  city: data.address.city,
+                  zone: data.address.zone,
+                  area: data.address.area,
+                },
+              }
+            : undefined,
+          settings: {
+            create: {
+              emailNotifications: true,
+            },
+          },
+          subscription: {
+            create: {
+              planType: SubscriptionPlan.FREE,
+              isActive: true,
+            },
+          },
+          onboarding: {
+            create: {
+              personalInfoComplete: !!data.personalInfo,
+              addressComplete: !!data.address,
+              bankInfoComplete: false,
+              documentsComplete: false,
+              overallComplete: false,
+            },
           },
         },
         include: {
@@ -62,6 +122,11 @@ export class VendorService {
               isVerified: true,
             },
           },
+          personalInfo: true,
+          pickupAddress: true,
+          settings: true,
+          subscription: true,
+          onboarding: true,
         },
       });
 
@@ -75,35 +140,64 @@ export class VendorService {
       return vendor;
     });
   }
-
   async getVendorById(id: string): Promise<VendorWithDetails | null> {
-    return await prisma.vendor.findUnique({
-      where: { id },
-      include: {
-        user: {
+    try {
+      return await prisma.vendor.findUnique({
+        where: { id },
+        include: {
+          // Essential user info
+          user: {
+            select: {
+              id: true,
+              email: true,
+              phone: true,
+              isActive: true,
+              isVerified: true,
+            },
+          },
+          // Basic vendor info
+          personalInfo: true,
+          settings: true,
+         commissions: {
           select: {
             id: true,
-            email: true,
-            phone: true,
-            isActive: true,
-            isVerified: true,
+            categoryId: true,
+            rate: true,
+            category: {
+              select: {
+                name: true,  
+              },
+            },
           },
         },
-        performance: true,
-        _count: {
-          select: {
-            products: true,
-            orders: true,
-            flags: true,
+
+          // Counts only (no full relations)
+          _count: {
+            select: {
+              products: true,
+              orders: true,
+              flags: true,
+              employees: true,
+              documents: true,
+              followers: true,
+              commissions: true,
+              payouts: true,
+              advertisements: true,
+            },
           },
         },
-      },
-    });
+      });
+    } catch (error) {
+      console.error("Error fetching vendor:", error);
+      throw error;
+    }
   }
 
   async getVendors(filters: VendorFilterQuery) {
     const {
       status,
+      verificationStatus,
+      accountType, // CHANGED: from sellerType to accountType
       search,
       commissionMin,
       commissionMax,
@@ -119,10 +213,27 @@ export class VendorService {
 
     const where: Prisma.VendorWhereInput = {
       ...(status && { status }),
+      ...(verificationStatus && { verificationStatus }),
+      ...(accountType && { accountType }), // CHANGED: from sellerType to accountType
       ...(search && {
         OR: [
           { storeName: { contains: search, mode: "insensitive" } },
           { user: { email: { contains: search, mode: "insensitive" } } },
+          // REMOVED: personalInfo firstName/lastName searches since they're no longer in the schema
+          // ADDED: Search in new personal info fields
+          {
+            personalInfo: { idName: { contains: search, mode: "insensitive" } },
+          },
+          {
+            personalInfo: {
+              companyName: { contains: search, mode: "insensitive" },
+            },
+          },
+          {
+            personalInfo: {
+              businessRegNo: { contains: search, mode: "insensitive" },
+            },
+          },
         ],
       }),
       ...(commissionMin !== undefined && {
@@ -151,12 +262,23 @@ export class VendorService {
               isVerified: true,
             },
           },
+          personalInfo: true,
+          bankInfo: true,
+          documents: {
+            // ADDED: Include documents array
+            take: 5, // Limit to recent documents
+            orderBy: { createdAt: "desc" },
+          },
+          pickupAddress: true,
+          subscription: true,
           performance: true,
+          onboarding: true,
           _count: {
             select: {
               products: true,
               orders: true,
               flags: true,
+              documents: true, // ADDED: Count of documents
             },
           },
         },
@@ -176,9 +298,18 @@ export class VendorService {
   }
 
   async updateVendorProfile(id: string, data: UpdateVendorProfileRequest) {
-    return await prisma.vendor.update({
+    // Get current vendor data to check for old avatar
+    const currentVendor = await this.getVendorById(id);
+    console.log(data);
+    // Update vendor
+    const vendor = await prisma.vendor.update({
       where: { id },
-      data,
+      data: {
+        storeName: data.storeName,
+        avatar: data.avatar,
+        accountType: data.accountType,
+        status: data.status,
+      },
       include: {
         user: {
           select: {
@@ -189,8 +320,13 @@ export class VendorService {
             isVerified: true,
           },
         },
+        personalInfo: true,
+        bankInfo: true,
+        pickupAddress: true,
       },
     });
+
+    return vendor;
   }
 
   async updateVendorStatus(id: string, status: VendorStatus) {
@@ -225,62 +361,757 @@ export class VendorService {
     });
   }
 
-  // Commission Management
-  async setCommissionRate(vendorId: string, data: VendorCommissionRequest) {
+  // ================================
+  // PERSONAL INFO MANAGEMENT
+  // ================================
+
+  async createOrUpdatePersonalInfo(
+    vendorId: string,
+    data: VendorPersonalInfoRequest
+  ) {
     return await prisma.$transaction(async (tx) => {
-      // Create commission record
-      await tx.vendorCommission.create({
-        data: {
+      // First get vendor to check account type
+      const vendor = await tx.vendor.findUnique({
+        where: { id: vendorId },
+        select: { accountType: true },
+      });
+
+      if (!vendor) {
+        throw new Error("Vendor not found");
+      }
+
+      const personalInfo = await tx.vendorPersonalInfo.upsert({
+        where: { vendorId },
+        update: {
+          // Individual-specific fields
+          idNumber: data.idNumber,
+          idName: data.idName,
+          // Business-specific fields
+          companyName: data.companyName,
+          businessRegNo: data.businessRegNo,
+          taxIdNumber: data.taxIdNumber,
+        },
+        create: {
           vendorId,
-          rate: data.rate,
-          note: data.note,
-          effectiveFrom: data.effectiveFrom || new Date(),
-          effectiveTo: data.effectiveTo,
+          // Individual-specific fields
+          idNumber: data.idNumber,
+          idName: data.idName,
+          // Business-specific fields
+          companyName: data.companyName,
+          businessRegNo: data.businessRegNo,
+          taxIdNumber: data.taxIdNumber,
         },
       });
 
-      // Update current rate in vendor table
-      return await tx.vendor.update({
-        where: { id: vendorId },
-        data: { currentCommissionRate: data.rate },
+      // Validate required fields based on account type
+      if (vendor.accountType === "INDIVIDUAL") {
+        if (!data.idNumber || !data.idName) {
+          throw new Error(
+            "ID number and ID name are required for individual accounts"
+          );
+        }
+      } else if (vendor.accountType === "BUSINESS") {
+        if (!data.companyName || !data.businessRegNo) {
+          throw new Error(
+            "Company name and business registration number are required for business accounts"
+          );
+        }
+      }
+
+      // Update onboarding progress
+      await tx.vendorOnboardingChecklist.upsert({
+        where: { vendorId },
+        update: {
+          personalInfoComplete: true,
+          overallComplete: await this.calculateOverallCompletion(tx, vendorId),
+        },
+        create: {
+          vendorId,
+          personalInfoComplete: true,
+          addressComplete: false,
+          bankInfoComplete: false,
+          documentsComplete: false,
+          overallComplete: false,
+        },
       });
+
+      return personalInfo;
     });
   }
 
-  async getCommissionHistory(vendorId: string) {
-    return await prisma.vendorCommission.findMany({
+  async getPersonalInfo(vendorId: string) {
+    return await prisma.vendorPersonalInfo.findUnique({
+      where: { vendorId },
+    });
+  }
+
+  async deletePersonalInfo(vendorId: string) {
+    return await prisma.vendorPersonalInfo.delete({
+      where: { vendorId },
+    });
+  }
+
+  // UPDATED: Complete vendor profile
+  async getCompleteVendorProfile(
+    vendorId: string
+  ): Promise<CompleteVendorProfile | null> {
+    console.log(
+      "🔍 [DEBUG] Starting getCompleteVendorProfile for vendor:",
+      vendorId
+    );
+
+    try {
+      console.log("🔍 [DEBUG] Executing Prisma query...");
+
+      const result = await prisma.vendor.findUnique({
+        where: { id: vendorId },
+        include: {
+          user: {
+            select: {
+              id: true,
+              email: true,
+              phone: true,
+              isActive: true,
+              isVerified: true,
+            },
+          },
+          personalInfo: true,
+          bankInfo: true,
+          documents: true, // ✅ This should be documents
+          pickupAddress: true,
+          settings: true,
+          subscription: true,
+          onboarding: true,
+          performance: true,
+          _count: {
+            select: {
+              products: true,
+              orders: true,
+              flags: true,
+            },
+          },
+        },
+      });
+
+      console.log("✅ [DEBUG] Query executed successfully");
+      console.log(
+        "✅ [DEBUG] Result:",
+        result ? "Found vendor" : "Vendor not found"
+      );
+
+      return result as CompleteVendorProfile | null;
+    } catch (error: any) {
+      console.error("❌ [DEBUG] Error in getCompleteVendorProfile:", error);
+      console.error("❌ [DEBUG] Error message:", error.message);
+      console.error("❌ [DEBUG] Error stack:", error.stack);
+      throw error;
+    }
+  }
+
+  // ================================
+  // ADDRESS MANAGEMENT
+  // ================================
+
+  async createOrUpdateAddress(vendorId: string, data: VendorAddressRequest) {
+    return await prisma.$transaction(async (tx) => {
+      const address = await tx.vendorAddress.upsert({
+        where: { vendorId },
+        update: {
+          detailsAddress: data.detailsAddress,
+          city: data.city,
+          zone: data.zone,
+          area: data.area,
+        },
+        create: {
+          vendorId,
+          detailsAddress: data.detailsAddress,
+          city: data.city,
+          zone: data.zone,
+          area: data.area,
+        },
+      });
+
+      // Update onboarding progress
+      await tx.vendorOnboardingChecklist.upsert({
+        where: { vendorId },
+        update: {
+          addressComplete: true,
+          overallComplete: await this.calculateOverallCompletion(tx, vendorId),
+        },
+        create: {
+          vendorId,
+          personalInfoComplete: false,
+          addressComplete: true,
+          bankInfoComplete: false,
+          documentsComplete: false,
+          overallComplete: false,
+        },
+      });
+
+      return address;
+    });
+  }
+
+  async getAddress(vendorId: string) {
+    return await prisma.vendorAddress.findUnique({
+      where: { vendorId },
+    });
+  }
+
+  // ================================
+  // BANK INFO MANAGEMENT
+  // ================================
+
+  async createOrUpdateBankInfo(vendorId: string, data: VendorBankInfoRequest) {
+    return await prisma.$transaction(async (tx) => {
+      const bankInfo = await tx.vendorBankInfo.upsert({
+        where: { vendorId },
+        update: {
+          accountName: data.accountName,
+          accountNumber: data.accountNumber,
+          bankName: data.bankName,
+          branchName: data.branchName,
+        },
+        create: {
+          vendorId,
+          accountName: data.accountName,
+          accountNumber: data.accountNumber,
+          bankName: data.bankName,
+          branchName: data.branchName,
+        },
+      });
+
+      // Update onboarding progress
+      await tx.vendorOnboardingChecklist.upsert({
+        where: { vendorId },
+        update: {
+          bankInfoComplete: true,
+          overallComplete: await this.calculateOverallCompletion(tx, vendorId),
+        },
+        create: {
+          vendorId,
+          personalInfoComplete: false,
+          addressComplete: false,
+          bankInfoComplete: true,
+          documentsComplete: false,
+          overallComplete: false,
+        },
+      });
+
+      return bankInfo;
+    });
+  }
+
+  async getBankInfo(vendorId: string) {
+    return await prisma.vendorBankInfo.findUnique({
+      where: { vendorId },
+    });
+  }
+
+  // ================================
+  // DOCUMENT MANAGEMENT - UPDATED
+  // ================================
+
+  async uploadDocument(vendorId: string, data: VendorDocumentRequest) {
+    return await prisma.$transaction(async (tx) => {
+      // Check if vendor exists and get account type
+      const vendor = await tx.vendor.findUnique({
+        where: { id: vendorId },
+        select: { accountType: true },
+      });
+
+      if (!vendor) {
+        throw new Error("Vendor not found");
+      }
+
+      // Validate document type based on account type
+      if (vendor.accountType === "INDIVIDUAL") {
+        const validIndividualTypes = [
+          "NATIONAL_ID_FRONT",
+          "NATIONAL_ID_BACK",
+          "PASSPORT_FRONT",
+          "PASSPORT_BACK",
+        ];
+        if (!validIndividualTypes.includes(data.type)) {
+          throw new Error("Invalid document type for individual account");
+        }
+      } else if (vendor.accountType === "BUSINESS") {
+        const validBusinessTypes = [
+          "NATIONAL_ID_FRONT",
+          "NATIONAL_ID_BACK",
+          "PASSPORT_FRONT",
+          "PASSPORT_BACK",
+          "TRADE_LICENSE",
+          "RJSC_REGISTRATION",
+          "TIN_CERTIFICATE",
+          "VAT_CERTIFICATE",
+          "OTHER",
+        ];
+        if (!validBusinessTypes.includes(data.type)) {
+          throw new Error("Invalid document type for business account");
+        }
+      }
+
+      // Check if document of this type already exists
+      const existingDocument = await tx.vendorDocument.findFirst({
+        where: {
+          vendorId,
+          type: data.type as any,
+        },
+      });
+
+      if (existingDocument) {
+        // Delete old file from R2
+        try {
+          const oldKey = this.extractKeyFromUrl(existingDocument.filePath);
+          if (oldKey) {
+            await deleteFromR2(oldKey);
+          }
+        } catch (deleteError) {
+          console.error("Failed to delete old document:", deleteError);
+        }
+
+        // Update existing document
+        const updatedDocument = await tx.vendorDocument.update({
+          where: { id: existingDocument.id },
+          data: {
+            title: data.title,
+            filePath: data.filePath,
+            verificationStatus: data.verificationStatus || "PENDING",
+            updatedAt: new Date(),
+          },
+        });
+
+        return updatedDocument;
+      }
+
+      // Create new document
+      const document = await tx.vendorDocument.create({
+        data: {
+          vendorId,
+          type: data.type as any,
+          title: data.title,
+          filePath: data.filePath,
+          verificationStatus: data.verificationStatus || "PENDING",
+        },
+      });
+
+      // Check if all required documents are uploaded
+      const requiredDocumentsComplete =
+        await this.checkRequiredDocumentsComplete(
+          tx,
+          vendorId,
+          vendor.accountType
+        );
+
+      if (requiredDocumentsComplete) {
+        await tx.vendorOnboardingChecklist.upsert({
+          where: { vendorId },
+          update: {
+            documentsComplete: true,
+            overallComplete: await this.calculateOverallCompletion(
+              tx,
+              vendorId
+            ),
+          },
+          create: {
+            vendorId,
+            personalInfoComplete: false,
+            addressComplete: false,
+            bankInfoComplete: false,
+            documentsComplete: true,
+            overallComplete: false,
+          },
+        });
+      }
+
+      return document;
+    });
+  }
+  // Helper: Extract key from R2 URL
+  private extractKeyFromUrl(url: string): string | null {
+    try {
+      if (!url) return null;
+
+      if (url.includes(process.env.R2_PUBLIC_DOMAIN!)) {
+        return url.replace(`${process.env.R2_PUBLIC_DOMAIN!}/`, "");
+      } else if (url.includes(process.env.R2_ENDPOINT!)) {
+        return url.replace(
+          `${process.env.R2_ENDPOINT!}/${process.env.R2_BUCKET_NAME!}/`,
+          ""
+        );
+      }
+      return url;
+    } catch (error) {
+      console.error("Error extracting key from URL:", error);
+      return null;
+    }
+  }
+
+  // UPDATED: Check if all required documents are uploaded based on account type
+  private async checkRequiredDocumentsComplete(
+    tx: any,
+    vendorId: string,
+    accountType: AccountType
+  ): Promise<boolean> {
+    const documents = await tx.vendorDocument.findMany({
+      where: { vendorId },
+      select: { type: true },
+    });
+
+    const uploadedTypes = documents.map((doc) => doc.type);
+
+    if (accountType === "INDIVIDUAL") {
+      // For individual: need either NID front+back OR Passport front+back
+      const hasNID =
+        uploadedTypes.includes("NATIONAL_ID_FRONT") &&
+        uploadedTypes.includes("NATIONAL_ID_BACK");
+      const hasPassport =
+        uploadedTypes.includes("PASSPORT_FRONT") &&
+        uploadedTypes.includes("PASSPORT_BACK");
+
+      return hasNID || hasPassport;
+    } else if (accountType === "BUSINESS") {
+      // For business: at least one business document is required
+      const businessDocumentTypes = [
+        "TRADE_LICENSE",
+        "RJSC_REGISTRATION",
+        "TIN_CERTIFICATE",
+        "VAT_CERTIFICATE",
+      ];
+      return uploadedTypes.some((type) => businessDocumentTypes.includes(type));
+    }
+
+    return false;
+  }
+
+  // UPDATED: Get required document types based on account type
+  async getRequiredDocumentTypes(vendorId: string) {
+    const vendor = await prisma.vendor.findUnique({
+      where: { id: vendorId },
+      select: { accountType: true },
+    });
+
+    if (!vendor) {
+      throw new Error("Vendor not found");
+    }
+
+    if (vendor.accountType === "INDIVIDUAL") {
+      return {
+        required: [
+          { type: "NATIONAL_ID_FRONT", label: "National ID Front" },
+          { type: "NATIONAL_ID_BACK", label: "National ID Back" },
+        ],
+        alternatives: [
+          { type: "PASSPORT_FRONT", label: "Passport Front" },
+          { type: "PASSPORT_BACK", label: "Passport Back" },
+        ],
+      };
+    } else {
+      return {
+        required: [{ type: "TRADE_LICENSE", label: "Trade License" }],
+        alternatives: [
+          { type: "RJSC_REGISTRATION", label: "RJSC Registration" },
+          { type: "TIN_CERTIFICATE", label: "TIN Certificate" },
+          { type: "VAT_CERTIFICATE", label: "VAT Certificate" },
+        ],
+      };
+    }
+  }
+
+  async getDocuments(vendorId: string) {
+    return await prisma.vendorDocument.findMany({
       where: { vendorId },
       orderBy: { createdAt: "desc" },
     });
   }
 
-  async bulkUpdateCommissions(data: BulkCommissionUpdateRequest) {
-    return await prisma.$transaction(async (tx) => {
-      // Create commission records for all vendors
-      const commissionPromises = data.vendorIds.map((vendorId) =>
-        tx.vendorCommission.create({
-          data: {
-            vendorId,
-            rate: data.rate,
-            note: data.note,
-            effectiveFrom: data.effectiveFrom || new Date(),
-          },
-        })
-      );
-
-      await Promise.all(commissionPromises);
-
-      // Update current rates
-      await tx.vendor.updateMany({
-        where: { id: { in: data.vendorIds } },
-        data: { currentCommissionRate: data.rate },
-      });
-
-      return { updated: data.vendorIds.length };
+  async updateDocumentStatus(
+    documentId: string,
+    status: DocumentVerificationStatus,
+    rejectionReason?: string
+  ) {
+    return await prisma.vendorDocument.update({
+      where: { id: documentId },
+      data: {
+        verificationStatus: status,
+        rejectionReason: rejectionReason,
+      },
     });
   }
 
-  // Payout Management
+  async deleteDocument(documentId: string) {
+    return await prisma.$transaction(async (tx) => {
+      const document = await tx.vendorDocument.findUnique({
+        where: { id: documentId },
+      });
+
+      if (!document) {
+        throw new Error("Document not found");
+      }
+
+      // Delete from R2
+      try {
+        const key = this.extractKeyFromUrl(document.filePath);
+        if (key) {
+          await deleteFromR2(key);
+        }
+      } catch (deleteError) {
+        console.error("Failed to delete from R2:", deleteError);
+      }
+
+      // Delete from database
+      await tx.vendorDocument.delete({
+        where: { id: documentId },
+      });
+
+      return document;
+    });
+  }
+
+  // UPDATED: Calculate overall completion
+  private async calculateOverallCompletion(
+    tx: any,
+    vendorId: string
+  ): Promise<boolean> {
+    const checklist = await tx.vendorOnboardingChecklist.findUnique({
+      where: { vendorId },
+      select: {
+        personalInfoComplete: true,
+        addressComplete: true,
+        bankInfoComplete: true,
+        documentsComplete: true,
+      },
+    });
+
+    if (!checklist) {
+      return false;
+    }
+
+    return (
+      checklist.personalInfoComplete &&
+      checklist.addressComplete &&
+      checklist.bankInfoComplete &&
+      checklist.documentsComplete
+    );
+  }
+
+  // ================================
+  // SUBSCRIPTION MANAGEMENT
+  // ================================
+
+  async createOrUpdateSubscription(
+    vendorId: string,
+    data: VendorSubscriptionRequest
+  ) {
+    return await prisma.vendorSubscription.upsert({
+      where: { vendorId },
+      update: {
+        planType: data.planType,
+        isActive: data.isActive,
+      },
+      create: {
+        vendorId,
+        planType: data.planType,
+        isActive: data.isActive,
+      },
+    });
+  }
+
+  async getSubscription(vendorId: string) {
+    return await prisma.vendorSubscription.findUnique({
+      where: { vendorId },
+    });
+  }
+
+  async cancelSubscription(vendorId: string) {
+    return await prisma.vendorSubscription.update({
+      where: { vendorId },
+      data: {
+        isActive: false,
+      },
+    });
+  }
+
+  // ================================
+  // ONBOARDING MANAGEMENT
+  // ================================
+
+  async getOnboardingStatus(
+    vendorId: string
+  ): Promise<VendorOnboardingStatus | null> {
+    return await prisma.vendorOnboardingChecklist.findUnique({
+      where: { vendorId },
+    });
+  }
+
+  // ================================
+  // SETTINGS MANAGEMENT
+  // ================================
+
+  async getSettings(vendorId: string) {
+    return await prisma.vendorSettings.findUnique({
+      where: { vendorId },
+    });
+  }
+
+  async updateSettings(vendorId: string, emailNotifications: boolean) {
+    return await prisma.vendorSettings.upsert({
+      where: { vendorId },
+      update: {
+        emailNotifications,
+      },
+      create: {
+        vendorId,
+        emailNotifications,
+      },
+    });
+  }
+
+  // ================================
+  // VERIFICATION MANAGEMENT
+  // ================================
+
+  async verifyVendor(vendorId: string) {
+    return await prisma.$transaction(async (tx) => {
+      const vendor = await tx.vendor.update({
+        where: { id: vendorId },
+        data: {
+          verificationStatus: VerificationStatus.VERIFIED,
+          verifiedAt: new Date(),
+          status: VendorStatus.ACTIVE,
+        },
+      });
+
+      return vendor;
+    });
+  }
+
+  async rejectVendor(vendorId: string, rejectionReason: string) {
+    return await prisma.vendor.update({
+      where: { id: vendorId },
+      data: {
+        verificationStatus: VerificationStatus.REJECTED,
+        rejectedAt: new Date(),
+        rejectionReason,
+      },
+    });
+  }
+
+  async requestReVerification(vendorId: string) {
+    return await prisma.vendor.update({
+      where: { id: vendorId },
+      data: {
+        verificationStatus: VerificationStatus.PENDING,
+        rejectedAt: null,
+        rejectionReason: null,
+      },
+    });
+  }
+
+  // ================================
+  // COMMISSION MANAGEMENT (UPDATED)
+  // ================================
+
+ async setCommissionRate(vendorId: string, data: VendorCommissionRequest) {
+  return await prisma.$transaction(async (tx) => {
+
+    await tx.vendorCommission.upsert({
+      where: {
+        vendorId_categoryId: {
+          vendorId,
+          categoryId: data.categoryId || null,   // composite key
+        },
+      },
+
+      update: {
+        rate: data.rate,
+      },
+
+      create: {
+        vendorId,
+        categoryId: data.categoryId || null,
+        rate: data.rate,
+      },
+    });
+
+    // Update only global commission (no category ID)
+    if (!data.categoryId) {
+      await tx.vendor.update({
+        where: { id: vendorId },
+        data: { currentCommissionRate: data.rate },
+      });
+    }
+
+    return { success: true, message: "Commission rate set successfully" };
+  });
+}
+
+
+  async getCommissionHistory(vendorId: string, categoryId?: string) {
+    return await prisma.vendorCommission.findMany({
+      where: {
+        vendorId,
+        ...(categoryId ? { categoryId } : {}), 
+      },
+      include: { category: true },
+      orderBy: { createdAt: "desc" },
+    });
+  }
+
+ async bulkUpdateCommissions(data: BulkCommissionUpdateRequest) {
+  return await prisma.$transaction(async (tx) => {
+    
+    // 1️⃣ Validate vendorIds
+    const existingVendors = await tx.vendor.findMany({
+      where: { id: { in: data.vendorIds } },
+      select: { id: true },
+    });
+
+    const existingIds = existingVendors.map(v => v.id);
+    const missingIds = data.vendorIds.filter(id => !existingIds.includes(id));
+
+    if (missingIds.length > 0) {
+      throw new Error(`Invalid vendorId(s): ${missingIds.join(", ")}`);
+    }
+
+    // 2️⃣ Upsert commissions (NOT create)
+    const promises = data.vendorIds.map(vendorId =>
+      tx.vendorCommission.upsert({
+        where: {
+          vendorId_categoryId: {
+            vendorId,
+            categoryId: data.categoryId || null,
+          }
+        },
+        create: {
+          vendorId,
+          categoryId: data.categoryId || null,
+          rate: data.rate,
+          note: data.note,
+          effectiveFrom: data.effectiveFrom || new Date(),
+        },
+        update: {
+          rate: data.rate,
+          note: data.note,
+          effectiveFrom: data.effectiveFrom || new Date(),
+        }
+      })
+    );
+
+    await Promise.all(promises);
+
+    
+
+    return { updated: data.vendorIds.length };
+  });
+}
+
+
+  // ================================
+  // PAYOUT MANAGEMENT
+  // ================================
+
   async createPayout(vendorId: string, data: VendorPayoutRequest) {
     return await prisma.vendorPayout.create({
       data: {
@@ -329,7 +1160,6 @@ export class VendorService {
       orderBy: { paidAt: "desc" },
     });
 
-    // Calculate current balance from orders
     const orderSummary = await prisma.order.aggregate({
       where: { vendorId, status: "DELIVERED" },
       _sum: { totalAmount: true },
@@ -350,7 +1180,10 @@ export class VendorService {
     };
   }
 
-  // Monthly Charges
+  // ================================
+  // MONTHLY CHARGES
+  // ================================
+
   async setMonthlyCharge(vendorId: string, data: VendorMonthlyChargeRequest) {
     return await prisma.vendorMonthlyCharge.create({
       data: {
@@ -383,34 +1216,10 @@ export class VendorService {
     });
   }
 
-  // Promotional Offers
-  async createOffer(vendorId: string, data: VendorOfferRequest) {
-    return await prisma.vendorOffer.create({
-      data: {
-        vendorId,
-        title: data.title,
-        details: data.details,
-        validFrom: data.validFrom,
-        validTo: data.validTo,
-      },
-    });
-  }
+  // ================================
+  // PERFORMANCE MONITORING
+  // ================================
 
-  async getVendorOffers(vendorId: string) {
-    return await prisma.vendorOffer.findMany({
-      where: { vendorId },
-      orderBy: { createdAt: "desc" },
-    });
-  }
-
-  async toggleOfferStatus(id: string, isActive: boolean) {
-    return await prisma.vendorOffer.update({
-      where: { id },
-      data: { isActive },
-    });
-  }
-
-  // Performance Monitoring
   async getVendorPerformance(
     vendorId: string
   ): Promise<VendorPerformanceMetrics | null> {
@@ -420,7 +1229,6 @@ export class VendorService {
 
     if (!performance) return null;
 
-    // Get additional metrics
     const orders = await prisma.order.groupBy({
       by: ["status"],
       where: { vendorId },
@@ -440,7 +1248,7 @@ export class VendorService {
       totalOrders: performance.totalOrders,
       fulfillmentRatePct: performance.fulfillmentRatePct,
       avgRating: performance.avgRating,
-      monthlyGrowth: 0, // Calculate based on requirements
+      monthlyGrowth: 0,
       completedOrders,
       cancelledOrders,
       returnedOrders,
@@ -487,7 +1295,10 @@ export class VendorService {
     });
   }
 
-  // Fraud Detection
+  // ================================
+  // FRAUD DETECTION
+  // ================================
+
   async detectFraud(vendorId: string): Promise<FraudDetectionResult> {
     const [orders, vendor] = await Promise.all([
       prisma.order.findMany({
@@ -504,7 +1315,6 @@ export class VendorService {
     const declineRate =
       totalOrders > 0 ? (cancelledOrders / totalOrders) * 100 : 0;
 
-    // Analyze pricing patterns
     const prices = orders.flatMap((o) => o.items.map((i) => i.price));
     const avgPrice =
       prices.length > 0 ? prices.reduce((a, b) => a + b, 0) / prices.length : 0;
@@ -515,35 +1325,31 @@ export class VendorService {
     const flags = {
       excessiveOrderDeclines: declineRate > 20,
       suspiciousPricing: priceVariation > 200,
-      unusualOrderPatterns: false, // Implement based on requirements
+      unusualOrderPatterns: false,
       lowFulfillmentRate: (vendor?.fulfillmentRatePct || 100) < 80,
     };
 
     let riskScore = 0;
     const recommendations: string[] = [];
 
-    if (flags.excessiveOrderDeclines) {
-      riskScore += 25;
-      recommendations.push("High order decline rate detected");
-    }
-    if (flags.suspiciousPricing) {
-      riskScore += 30;
-      recommendations.push("Suspicious pricing patterns detected");
-    }
-    if (flags.lowFulfillmentRate) {
-      riskScore += 20;
-      recommendations.push("Low order fulfillment rate");
-    }
+    if (flags.excessiveOrderDeclines) riskScore += 25;
+    if (flags.suspiciousPricing) riskScore += 30;
+    if (flags.lowFulfillmentRate) riskScore += 20;
 
-    return {
-      vendorId,
-      riskScore,
-      flags,
-      recommendations,
-    };
+    if (flags.excessiveOrderDeclines)
+      recommendations.push("High order decline rate detected");
+    if (flags.suspiciousPricing)
+      recommendations.push("Suspicious pricing patterns detected");
+    if (flags.lowFulfillmentRate)
+      recommendations.push("Low order fulfillment rate");
+
+    return { vendorId, riskScore, flags, recommendations };
   }
 
-  // Flag Management
+  // ================================
+  // FLAG MANAGEMENT
+  // ================================
+
   async flagVendor(vendorId: string, data: VendorFlagRequest) {
     return await prisma.vendorFlag.create({
       data: {
@@ -562,90 +1368,13 @@ export class VendorService {
     });
   }
 
-  // Chat/Conversation Management
-  async getVendorConversations(vendorId?: string, userId?: string) {
-    return await prisma.vendorConversation.findMany({
-      where: {
-        ...(vendorId && { vendorId }),
-        ...(userId && { userId }),
-      },
-      include: {
-        vendor: {
-          select: {
-            storeName: true,
-            avatar: true,
-          },
-        },
-        user: {
-          select: {
-            name: true,
-            email: true,
-          },
-        },
-        _count: {
-          select: {
-            messages: true,
-          },
-        },
-      },
-      orderBy: { updatedAt: "desc" },
-    });
-  }
+  // ================================
+  // EXPORT FUNCTIONALITY
+  // ================================
 
-  async getConversationMessages(conversationId: string) {
-    return await prisma.vendorConversationMessage.findMany({
-      where: { conversationId },
-      include: {
-        sender: {
-          select: {
-            name: true,
-            role: true,
-          },
-        },
-      },
-      orderBy: { createdAt: "asc" },
-    });
-  }
-
-  async sendMessage(
-    conversationId: string,
-    senderId: string,
-    content: string,
-    metadata?: any
-  ) {
-    return await prisma.$transaction(async (tx) => {
-      const message = await tx.vendorConversationMessage.create({
-        data: {
-          conversationId,
-          senderId,
-          content,
-          metadata,
-        },
-        include: {
-          sender: {
-            select: {
-              name: true,
-              role: true,
-            },
-          },
-        },
-      });
-
-      // Update conversation timestamp
-      await tx.vendorConversation.update({
-        where: { id: conversationId },
-        data: { updatedAt: new Date() },
-      });
-
-      return message;
-    });
-  }
-
-  // Export functionality
   async exportVendors(options: VendorExportOptions) {
     const vendors = await this.getVendors(options.filters || {});
 
-    // Transform data based on selected fields
     const exportData = vendors.data.map((vendor) => {
       const row: any = {};
 
@@ -654,6 +1383,8 @@ export class VendorService {
       if (options.fields.includes("email")) row.email = vendor.user?.email;
       if (options.fields.includes("phone")) row.phone = vendor.user?.phone;
       if (options.fields.includes("status")) row.status = vendor.status;
+      if (options.fields.includes("verificationStatus"))
+        row.verificationStatus = vendor.verificationStatus;
       if (options.fields.includes("commissionRate"))
         row.commissionRate = vendor.currentCommissionRate;
       if (options.fields.includes("totalSales"))
@@ -662,6 +1393,10 @@ export class VendorService {
         row.totalOrders = vendor.performance?.totalOrders;
       if (options.fields.includes("createdAt"))
         row.createdAt = vendor.createdAt;
+      if (options.fields.includes("firstName"))
+        row.firstName = vendor.personalInfo?.firstName;
+      if (options.fields.includes("lastName"))
+        row.lastName = vendor.personalInfo?.lastName;
 
       return row;
     });

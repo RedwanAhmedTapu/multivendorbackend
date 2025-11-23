@@ -4,7 +4,8 @@ import { prisma } from "../config/prisma.ts";
 import { UserRole } from "@prisma/client";
 
 const ACCESS_TOKEN_SECRET = process.env.ACCESS_TOKEN_SECRET || "access-secret";
-const REFRESH_TOKEN_SECRET = process.env.REFRESH_TOKEN_SECRET || "refresh-secret";
+const REFRESH_TOKEN_SECRET =
+  process.env.REFRESH_TOKEN_SECRET || "refresh-secret";
 
 // ------------------- Generate Tokens -------------------
 export const generateTokens = (user: any) => {
@@ -15,8 +16,12 @@ export const generateTokens = (user: any) => {
   };
   if (user.role === "VENDOR" && user.vendorId) payload.vendorId = user.vendorId;
 
-  const accessToken = jwt.sign(payload, ACCESS_TOKEN_SECRET, { expiresIn: "1h" });
-  const refreshToken = jwt.sign(payload, REFRESH_TOKEN_SECRET, { expiresIn: "1d" });
+  const accessToken = jwt.sign(payload, ACCESS_TOKEN_SECRET, {
+    expiresIn: "3h",
+  });
+  const refreshToken = jwt.sign(payload, REFRESH_TOKEN_SECRET, {
+    expiresIn: "1d",
+  });
 
   return { accessToken, refreshToken };
 };
@@ -33,9 +38,33 @@ export const registerUser = async (data: {
   department?: string;
   isVerified?: boolean;
 }) => {
-  const { name, email, phone, password, role, storeName, designation, department, isVerified = false } = data;
+  const {
+    name,
+    email,
+    phone,
+    password,
+    role,
+    storeName,
+    designation,
+    department,
+    isVerified = false,
+  } = data;
 
   if (!email && !phone) throw new Error("Email or phone is required");
+  let normalizedPhone = phone || '';
+
+  // Only validate and normalize when a phone was provided
+  if (phone) {
+    // Ensure the number starts with 0
+    if (!phone.startsWith("0")) {
+      normalizedPhone = "0" + phone;
+    }
+
+    // Ensure it's exactly 11 digits
+    if (normalizedPhone.length !== 11) {
+      throw new Error("Phone number must be exactly 11 digits long");
+    }
+  }
 
   // Check uniqueness
   if (email) {
@@ -53,12 +82,16 @@ export const registerUser = async (data: {
 
   // Role-specific creation
   if (role === "VENDOR") {
-    const vendor = await prisma.vendor.create({ data: { storeName: storeName || "My Store" } });
+    const vendor = await prisma.vendor.create({
+      data: { storeName: storeName || "" },
+    });
     vendorId = vendor.id;
   }
 
   if (role === "EMPLOYEE") {
-    const employee = await prisma.employee.create({ data: { designation, department, permissions: [] } });
+    const employee = await prisma.employee.create({
+      data: { designation, department, permissions: [] },
+    });
     employeeId = employee.id;
   }
 
@@ -66,7 +99,7 @@ export const registerUser = async (data: {
     data: {
       name,
       email,
-      phone,
+      phone:normalizedPhone,
       password: hashedPassword,
       role,
       isVerified,
@@ -81,11 +114,21 @@ export const registerUser = async (data: {
 };
 
 // ------------------- Login User -------------------
-export const loginUser = async (email?: string, phone?: string, password?: string) => {
+export const loginUser = async (
+  email?: string,
+  phone?: string,
+  password?: string
+) => {
   if (!email && !phone) throw new Error("Email or phone is required");
 
+  // ✅ Normalize phone number — add '0' in front if missing
+  let normalizedPhone = phone;
+  if (phone && !phone.startsWith("0")) {
+    normalizedPhone = "0" + phone;
+  }
+
   const user = await prisma.user.findFirst({
-    where: { OR: [{ email }, { phone }] },
+    where: { OR: [{ email }, { phone: normalizedPhone }] },
     include: { vendor: true, employee: true, customerProfile: true },
   });
 
@@ -98,4 +141,16 @@ export const loginUser = async (email?: string, phone?: string, password?: strin
   const { accessToken, refreshToken } = generateTokens(user);
 
   return { user, accessToken, refreshToken };
+};
+
+// ------------------- Reset Password -------------------
+export const resetPassword = async (userId: string, newPassword: string) => {
+  const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+  const user = await prisma.user.update({
+    where: { id: userId },
+    data: { password: hashedPassword },
+  });
+
+  return user;
 };

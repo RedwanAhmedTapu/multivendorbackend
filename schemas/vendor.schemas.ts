@@ -23,9 +23,6 @@ export const updateVendorProfileSchema = z.object({
 export const setCommissionSchema = z.object({
   body: z.object({
     rate: z.number().min(0).max(100, 'Commission rate must be between 0 and 100'),
-    note: z.string().max(500).optional(),
-    effectiveFrom: z.string().datetime().optional(),
-    effectiveTo: z.string().datetime().optional(),
   })
 });
 
@@ -81,8 +78,6 @@ export const bulkCommissionSchema = z.object({
   body: z.object({
     vendorIds: z.array(z.string().cuid()).min(1, 'At least one vendor ID is required'),
     rate: z.number().min(0).max(100, 'Commission rate must be between 0 and 100'),
-    note: z.string().max(500).optional(),
-    effectiveFrom: z.string().datetime().optional(),
   })
 });
 

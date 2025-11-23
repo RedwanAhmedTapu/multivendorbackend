@@ -1,0 +1,1193 @@
+// schema.prisma - Complete fixed schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =========================== 
+// USER MODULE
+// ===========================
+
+model User {
+  id          String   @id @default(cuid())
+  name        String?
+  email       String?
+  phone       String?
+  password    String
+  role        UserRole
+  isActive    Boolean  @default(true)
+  isVerified  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Optional owner relationships
+  vendorId    String?  @unique
+  vendor      Vendor?  @relation(fields: [vendorId], references: [id])
+  
+  employeeId  String?
+  employee    Employee? @relation("UserEmployee")
+
+  // Customer profile
+  customerProfile CustomerProfile?
+
+  // Relations (UPDATED - removed old chat relations)
+  createdEmployees Employee[] @relation("EmployeeCreator")
+  approvedProducts Product[]  @relation("ProductApprover")
+  auditLogs        AuditLog[]
+  activityLogs     ActivityLog[]
+  reviews          Review[]
+  
+  // Blog posts
+  blogPosts BlogPost[]
+  
+  // Wallet & loyalty
+  walletTransactions  WalletTransaction[]
+  loyaltyTransactions LoyaltyTransaction[]
+
+// Terms and conditions relations
+  createdTerms    TermsAndConditions[] @relation("TermsCreator")
+  updatedTerms    TermsAndConditions[] @relation("TermsUpdater")
+
+  // NEW: Chat relations (replacing the old ones)
+  conversationParticipants ConversationParticipant[] // User can be in many conversations
+  sentMessages            Message[]                  // Messages user sent
+
+
+  @@unique([email, phone])
+  @@map("users")
+}
+
+
+enum UserRole {
+  CUSTOMER
+  VENDOR
+  EMPLOYEE
+  ADMIN
+}
+
+// =========================== 
+// VENDOR MODULE (UPDATED)
+// ===========================
+
+model Vendor {
+  id                    String       @id @default(cuid())
+  storeName             String
+  avatar                String?
+  status                VendorStatus @default(PENDING)
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+  currentCommissionRate Float?       @default(0)
+
+  // relations (UPDATED - removed old conversations)
+  user              User?
+  employees         Employee[]
+  sliders           Slider[]
+  products          Product[]
+  orders            Order[]
+  advertisements    Advertisement[]
+  messagingSetting  VendorMessagingSetting?
+  commissions       VendorCommission[]
+  payouts           VendorPayout[]
+  monthlyCharges    VendorMonthlyCharge[]
+  offers            VendorOffer[]
+  flags             VendorFlag[]
+  performance       VendorPerformance?
+
+  // NEW: Chat relations
+  conversationParticipants ConversationParticipant[] // Vendor can be in many conversations
+  sentMessages            Message[]                  // FIXED: Added missing relation
+
+  @@map("vendors")
+}
+
+// ===========================
+// EMPLOYEE (UPDATED)
+// ===========================
+model Employee {
+  id          String   @id @default(cuid())
+  designation String?
+  department  String?
+  permissions Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // One-to-one relation to User
+  userId String? @unique
+  user   User?   @relation("UserEmployee", fields: [userId], references: [id])
+
+  // Creator relation
+  createdById String?
+  createdBy   User? @relation("EmployeeCreator", fields: [createdById], references: [id])
+
+  vendorId String?
+  vendor   Vendor? @relation(fields: [vendorId], references: [id])
+
+  isActive Boolean @default(true)
+
+  // NEW: Chat relation
+  conversationParticipants ConversationParticipant[] // Employee can be in conversations
+  sentMessages            Message[]                  // FIXED: Added missing relation
+
+  @@map("employees")
+}
+
+
+// ===========================
+// Customer Profile
+// ===========================
+model CustomerProfile {
+  id            String @id @default(cuid())
+  userId        String @unique
+  address       String?
+  phone         String?
+  wallet        Float  @default(0)
+  loyaltyPoints Int    @default(0)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("customer_profiles")
+}
+// ===========================
+// DELIVERY PERSON (UPDATED)
+// ===========================
+model DeliveryPerson {
+  id        String   @id @default(cuid())
+  userId    String? // link to User if exists
+  name      String
+  phone     String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  collections DeliveryCollection[]
+  payouts     DeliveryPayout[]
+
+  // NEW: Chat relations
+  conversationParticipants ConversationParticipant[] // Delivery person in conversations
+  sentMessages            Message[]                  // Messages delivery person sent
+
+  @@map("delivery_persons")
+}
+
+// =========================== 
+// OPTIMIZED CHAT MODULE (FIXED RELATIONS)
+// ===========================
+
+enum ConversationType {
+  PRODUCT_INQUIRY
+  VENDOR_SUPPORT
+  USER_SUPPORT
+  DELIVERY_CHAT
+  GENERAL_CHAT
+}
+
+enum ParticipantType {
+  CUSTOMER
+  VENDOR
+  ADMIN
+  EMPLOYEE
+  DELIVERY
+}
+
+model Conversation {
+  id              String            @id @default(cuid())
+  type            ConversationType
+  productId       String?
+  orderId         Int?
+  title           String?
+  status          String            @default("OPEN")
+  lastMessageAt   DateTime?
+  lastMessageText String?
+  messageCount    Int               @default(0)
+  unreadCount     Int               @default(0)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  product         Product?          @relation(fields: [productId], references: [id], onDelete: Cascade)
+  order           Order?            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  participants    ConversationParticipant[]
+  messages        Message[]
+
+  @@map("conversations")
+  @@index([type, lastMessageAt])        // REMOVED: desc
+  @@index([productId, lastMessageAt])   // REMOVED: desc
+  @@index([orderId, lastMessageAt])     // REMOVED: desc
+  @@index([lastMessageAt])              // REMOVED: desc
+}
+
+model ConversationParticipant {
+  id              String           @id @default(cuid())
+  conversationId  String
+  userId          String?
+  vendorId        String?
+  employeeId      String?
+  deliveryPersonId String?
+  participantType ParticipantType
+  lastReadAt      DateTime?
+  joinedAt        DateTime         @default(now())
+  leftAt          DateTime?
+  isMuted         Boolean          @default(false)
+
+  // FIXED: Proper relation names and onDelete
+  conversation    Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user            User?            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vendor          Vendor?          @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  employee        Employee?        @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  deliveryPerson  DeliveryPerson?  @relation(fields: [deliveryPersonId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, userId, vendorId, employeeId, deliveryPersonId])
+  @@index([conversationId, lastReadAt])
+  @@index([userId, lastReadAt])
+  @@index([vendorId, lastReadAt])
+  @@map("conversation_participants")
+}
+
+enum MessageStatus {
+  SENDING
+  SENT
+  DELIVERED
+  SEEN
+}
+
+model Message {
+  id                      String   @id @default(cuid())
+  conversationId          String
+  senderId                String?
+  senderVendorId          String?
+  senderEmployeeId        String?
+  senderDeliveryPersonId  String?
+  senderType              ParticipantType
+  content                 String
+  status                  MessageStatus @default(SENT)
+  deliveredAt             DateTime?
+  seenAt                  DateTime?
+  createdAt               DateTime @default(now())
+
+  conversation            Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderUser              User?        @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  senderVendor            Vendor?      @relation(fields: [senderVendorId], references: [id], onDelete: Cascade)
+  senderEmployee          Employee?    @relation(fields: [senderEmployeeId], references: [id], onDelete: Cascade)
+  senderDelivery          DeliveryPerson? @relation(fields: [senderDeliveryPersonId], references: [id], onDelete: Cascade)
+
+  @@map("messages")
+  @@index([conversationId, createdAt])
+  @@index([createdAt])
+  @@index([senderType, createdAt])
+}
+
+enum VendorStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+}
+
+model VendorCommission {
+  id            String    @id @default(cuid())
+  vendorId      String
+  rate          Float
+  note          String?
+  effectiveFrom DateTime  @default(now())
+  effectiveTo   DateTime?
+  createdAt     DateTime  @default(now())
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@map("vendor_commissions")
+}
+
+model VendorPayout {
+  id        String       @id @default(cuid())
+  vendorId  String
+  amount    Float
+  status    PayoutStatus @default(PENDING)
+  method    String?
+  period    String?
+  note      String?
+  createdAt DateTime     @default(now())
+  paidAt    DateTime?
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@map("vendor_payouts")
+  @@index([vendorId])
+}
+
+enum PayoutStatus {
+  PENDING
+  PAID
+  FAILED
+}
+
+model VendorMonthlyCharge {
+  id            String    @id @default(cuid())
+  vendorId      String
+  amount        Float
+  description   String?
+  effectiveFrom DateTime  @default(now())
+  effectiveTo   DateTime?
+  createdAt     DateTime  @default(now())
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@map("vendor_monthly_charges")
+}
+
+model VendorOffer {
+  id        String    @id @default(cuid())
+  vendorId  String
+  title     String
+  details   String?
+  validFrom DateTime
+  validTo   DateTime?
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@map("vendor_offers")
+  @@index([vendorId])
+}
+
+model VendorFlag {
+  id        String   @id @default(cuid())
+  vendorId  String
+  reason    String
+  severity  Int      @default(1)
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@map("vendor_flags")
+}
+
+model VendorPerformance {
+  id                 String    @id @default(cuid())
+  vendorId           String    @unique
+  totalSales         Float     @default(0)
+  totalOrders        Int       @default(0)
+  fulfillmentRatePct Float     @default(100)
+  avgRating          Float     @default(0)
+  lastCalculatedAt   DateTime?
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@map("vendor_performance")
+}
+
+model VendorMessagingSetting {
+  id          String @id @default(cuid())
+  vendorId    String @unique
+  vendor      Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  isAvailable Boolean @default(true)
+  autoReply   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("vendor_messaging_settings")
+}
+// ===========================
+// Audit Log
+// ===========================
+model AuditLog {
+  id       String @id @default(cuid())
+  userId   String?
+  user     User?  @relation(fields: [userId], references: [id])
+
+  action    String
+  entity    String
+  entityId  String?
+  metadata  Json?
+
+  createdAt DateTime @default(now())
+
+  @@map("audit_logs")
+}
+// =========================== 
+// PRODUCT MODULE
+// ===========================
+
+model Category {
+  id       String @id @default(cuid())
+  name     String
+  slug     String @unique
+  image    String?
+  parentId String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  parent         Category? @relation("CategoryToChildren", fields: [parentId], references: [id], onDelete: Cascade)
+  children       Category[] @relation("CategoryToChildren")
+  attributes     CategoryAttribute[]
+  specifications CategorySpecification[]
+  products       Product[]
+
+  @@map("categories")
+}
+
+model CategoryAttribute {
+  id           String  @id @default(cuid())
+  categoryId   String
+  attributeId  String
+  isRequired   Boolean @default(false)
+  isForVariant Boolean @default(true)
+  filterable   Boolean @default(true)
+
+  attribute Attribute @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+  category  Category  @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([categoryId, attributeId])
+  @@map("category_attributes")
+}
+
+model Attribute {
+  id        String        @id @default(cuid())
+  name      String
+  slug      String        @unique
+  type      AttributeType
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @default(now())
+
+  values          AttributeValue[]
+  categories      CategoryAttribute[]
+  productSettings ProductAttributeSetting[]
+
+  @@map("attributes")
+}
+
+enum AttributeType {
+  TEXT
+  NUMBER
+  BOOLEAN
+  SELECT
+}
+
+model AttributeValue {
+  id          String   @id @default(cuid())
+  value       String
+  attributeId String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now())
+
+  attribute Attribute                 @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+  variants  ProductVariantAttribute[]
+
+  @@map("attribute_values")
+}
+
+model Product {
+  id          String                    @id @default(cuid())
+  name        String
+  description String?
+  slug        String                    @unique
+  vendorId    String
+  categoryId  String
+  createdAt   DateTime                  @default(now())
+  updatedAt   DateTime                  @updatedAt
+
+  // relations
+  images            ProductImage[]
+  specifications    ProductSpecificationValue[]
+  variants          ProductVariant[]
+  attributeSettings ProductAttributeSetting[]
+  category          Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  vendor            Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  approvalStatus ProductApprovalStatus @default(PENDING)
+  approvedById   String?
+  approvedBy     User? @relation("ProductApprover", fields: [approvedById], references: [id])
+
+  warranty Warranty?
+  reviews  Review[]
+  conversations Conversation[] // FIXED: Added missing relation
+
+  @@map("products")
+  @@index([vendorId])
+}
+
+enum ProductApprovalStatus {
+  PENDING
+  ACTIVE
+  REJECTED
+}
+
+model ProductImage {
+  id        String @id @default(cuid())
+  productId String?
+  variantId String?
+
+  product Product?        @relation(fields: [productId], references: [id])
+  variant ProductVariant? @relation(fields: [variantId], references: [id])
+
+  url       String
+  altText   String?
+  sortOrder Int?
+  createdAt DateTime @default(now())
+}
+
+model ProductVariant {
+  id        String   @id @default(cuid())
+  productId String
+  name      String?
+  sku       String   @unique
+  price     Float
+  stock     Int      @default(0)
+  weight    Float?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now())
+
+  images     ProductImage[]
+  attributes ProductVariantAttribute[]
+  product    Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  orderItems OrderItem[]
+
+  @@map("product_variants")
+}
+
+model ProductVariantAttribute {
+  id               String @id @default(cuid())
+  variantId        String
+  attributeValueId String
+
+  attributeValue AttributeValue @relation(fields: [attributeValueId], references: [id], onDelete: Cascade)
+  variant        ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@unique([variantId, attributeValueId])
+  @@map("product_variant_attributes")
+}
+
+model ProductSpecificationValue {
+  id              String  @id @default(cuid())
+  productId       String
+  specificationId String
+  valueString     String?
+  valueNumber     Float?
+
+  product       Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  specification Specification @relation(fields: [specificationId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, specificationId])
+  @@map("product_specification_values")
+}
+
+model ProductAttributeSetting {
+  id          String @id @default(cuid())
+  productId   String
+  attributeId String
+  isVariant   Boolean @default(false)
+
+  product   Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  attribute Attribute @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, attributeId])
+  @@map("product_attribute_settings")
+}
+
+model Review {
+  id        String   @id @default(cuid())
+  userId    String
+  productId String
+  rating    Int
+  comment   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, productId])
+  @@map("reviews")
+}
+
+model Specification {
+  id        String            @id @default(cuid())
+  name      String
+  slug      String            @unique
+  type      SpecificationType
+  unit      String?
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  categories CategorySpecification[]
+  values     ProductSpecificationValue[]
+  options    SpecificationOption[]
+
+  @@map("specifications")
+}
+
+enum SpecificationType {
+  TEXT
+  NUMBER
+  BOOLEAN
+  SELECT
+}
+
+model SpecificationOption {
+  id              String   @id @default(cuid())
+  specificationId String
+  value           String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @default(now())
+
+  specification Specification @relation(fields: [specificationId], references: [id], onDelete: Cascade)
+
+  @@unique([specificationId, value])
+  @@map("specification_options")
+}
+
+model CategorySpecification {
+  id              String  @id @default(cuid())
+  categoryId      String
+  specificationId String
+  isRequired      Boolean @default(false)
+  filterable      Boolean @default(true)
+
+  category      Category      @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  specification Specification @relation(fields: [specificationId], references: [id], onDelete: Cascade)
+
+  @@unique([categoryId, specificationId])
+  @@map("category_specifications")
+}
+
+model Warranty {
+  id                 String         @id @default(cuid())
+  productId          String         @unique
+  product            Product        @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  packageWeightValue Float
+  packageWeightUnit  WeightUnit
+  packageLength      Float
+  packageWidth       Float
+  packageHeight      Float
+  dangerousGoods     DangerousGoods
+
+  duration  Int
+  unit      WarrantyUnit
+  policy    String?
+  type      String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("warranties")
+}
+
+enum WarrantyUnit {
+  DAYS
+  MONTHS
+  YEARS
+}
+
+enum WeightUnit {
+  KG
+  G
+}
+
+enum DangerousGoods {
+  NONE
+  CONTAINS
+}
+
+// =========================== 
+// ORDER MODULE
+// ===========================
+
+model Order {
+  id          Int         @id @default(autoincrement())
+  totalAmount Float
+  status      OrderStatus
+  vendorId    String
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  items       OrderItem[]
+  vendor      Vendor      @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  shipping    Shipping?
+  collections DeliveryCollection[]
+  conversations Conversation[] // FIXED: Added missing relation
+
+  payments Payment[]
+  refunds  Refund[]
+
+  @@map("orders")
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PROCESSING
+  PACKAGING
+  SHIPPED
+  DELIVERED
+  RETURNED
+  FAILED_TO_DELIVER
+  CANCELLED
+  REFUNDED
+}
+
+model OrderItem {
+  id        String @id @default(cuid())
+  orderId   Int
+  variantId String
+  quantity  Int
+  price     Float
+
+  order   Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@map("order_items")
+}
+
+model Payment {
+  id        String        @id @default(cuid())
+  orderId   Int
+  method    String
+  amount    Float
+  status    PaymentStatus @default(PENDING)
+  meta      Json?
+  createdAt DateTime      @default(now())
+  paidAt    DateTime?
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("payments")
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+model Refund {
+  id          String       @id @default(cuid())
+  orderId     Int
+  amount      Float
+  reason      String?
+  status      RefundStatus @default(PENDING)
+  createdAt   DateTime     @default(now())
+  processedAt DateTime?
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("refunds")
+}
+
+enum RefundStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  REFUNDED
+}
+
+// =========================== 
+// SHIPPING MODULE
+// ===========================
+model ShippingProvider {
+  id        String   @id @default(cuid())
+  name      String   // e.g., "Pathao", "RedX", "Steadfast"
+  baseUrl   String
+  config    Json     // dynamic key-value config (clientId, secret, apiKey, etc.)
+  isActive  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Shipping {
+  id         String         @id @default(cuid())
+  orderId    Int            @unique
+  order      Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  address    String
+  city       String
+  postalCode String
+  country    String
+  status     ShippingStatus @default(PENDING)
+  trackingNo String?
+  courier    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("shippings")
+}
+
+enum ShippingStatus {
+  PENDING
+  DISPATCHED
+  IN_TRANSIT
+  DELIVERED
+  RETURNED
+}
+
+
+
+
+model DeliveryCollection {
+  id               String @id @default(cuid())
+  deliveryPersonId String
+  orderId          Int
+  amountCollected  Float
+  createdAt        DateTime @default(now())
+
+  deliveryPerson DeliveryPerson @relation(fields: [deliveryPersonId], references: [id], onDelete: Cascade)
+  order          Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@map("delivery_collections")
+}
+
+model DeliveryPayout {
+  id               String       @id @default(cuid())
+  deliveryPersonId String
+  amount           Float
+  status           PayoutStatus @default(PENDING)
+  createdAt        DateTime     @default(now())
+  paidAt           DateTime?
+
+  deliveryPerson DeliveryPerson @relation(fields: [deliveryPersonId], references: [id], onDelete: Cascade)
+
+  @@map("delivery_payouts")
+}
+
+
+
+
+// =========================== 
+// CONTENT MODULE
+// ===========================
+
+model Banner {
+  id        String   @id @default(cuid())
+  title     String
+  imageUrl  String
+  link      String?
+  position  String // e.g., hero, footer, popup
+  priority  Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("banners")
+}
+
+model BlogPost {
+  id          String    @id @default(cuid())
+  title       String
+  slug        String    @unique
+  body        String
+  authorId    String?
+  published   Boolean   @default(false)
+  publishedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  author User? @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@map("blog_posts")
+}
+
+model Faq {
+  id         String   @id @default(cuid())
+  question   String
+  answer     String
+  orderIndex Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("faqs")
+}
+
+// =========================== 
+// MARKETING MODULE
+// ===========================
+
+model Coupon {
+  id            String     @id @default(cuid())
+  code          String     @unique
+  description   String?
+  discountType  CouponType
+  discountValue Float
+  validFrom     DateTime
+  validTo       DateTime?
+  usageLimit    Int?
+  createdAt     DateTime   @default(now())
+  isActive      Boolean    @default(true)
+
+  @@map("coupons")
+}
+
+enum CouponType {
+  PERCENT
+  FIXED
+}
+
+model Campaign {
+  id        String    @id @default(cuid())
+  title     String
+  channels  String[] // e.g., ["email","sms"]
+  payload   Json
+  startedAt DateTime?
+  endedAt   DateTime?
+  createdAt DateTime  @default(now())
+
+  @@map("campaigns")
+}
+
+model Advertisement {
+  id        String    @id @default(cuid())
+  title     String
+  vendorId  String?
+  position  String // e.g., header, sidebar
+  startAt   DateTime
+  endAt     DateTime?
+  isActive  Boolean   @default(true)
+  meta      Json?
+  createdAt DateTime  @default(now())
+
+  vendor Vendor? @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@map("advertisements")
+}
+
+// =========================== 
+// ANALYTICS MODULE
+// ===========================
+
+model Report {
+  id        String   @id @default(cuid())
+  key       String // e.g., sales_daily_2025-09-01
+  payload   Json
+  createdAt DateTime @default(now())
+
+  @@map("reports")
+}
+
+model ActivityLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  action    String
+  entity    String?
+  entityId  String?
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("activity_logs")
+}
+
+// =========================== 
+// SEO MODULE
+// ===========================
+
+model SeoConfig {
+  id        String   @id @default(cuid())
+  page      String // e.g., home, product, blog
+  metaTitle String?
+  metaDesc  String?
+  metaJson  Json?
+  updatedAt DateTime @updatedAt
+
+  @@map("seo_configs")
+}
+
+model PushNotification {
+  id        String    @id @default(cuid())
+  title     String
+  body      String
+  target    Json?
+  sentAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@map("push_notifications")
+}
+
+model ReferralBonus {
+  id        String    @id @default(cuid())
+  code      String    @unique
+  reward    Json
+  createdAt DateTime  @default(now())
+  expiresAt DateTime?
+  isActive  Boolean   @default(true)
+
+  @@map("referral_bonuses")
+}
+
+model Survey {
+  id        String   @id @default(cuid())
+  title     String
+  questions Json
+  active    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("surveys")
+}
+
+// =========================== 
+// SETTINGS MODULE
+// ===========================
+
+model Setting {
+  id    String @id @default(cuid())
+  key   String @unique
+  value Json
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
+}
+
+model PaymentGateway {
+  id        String   @id @default(cuid())
+  provider  String
+  config    Json
+  enabled   Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("payment_gateways")
+}
+
+model Currency {
+  id         String   @id @default(cuid())
+  code       String   @unique
+  symbol     String
+  rateToBase Float    @default(1) // conversion
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+
+  @@map("currencies")
+}
+
+model BackupJob {
+  id         String    @id @default(cuid())
+  type       String
+  status     String
+  meta       Json?
+  createdAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  @@map("backup_jobs")
+}
+
+// =========================== 
+// WALLET MODULE
+// ===========================
+
+// Enum for wallet transactions
+enum WalletTransactionType {
+  CREDIT      // money added
+  DEBIT       // money spent
+  REFUND      // refunded to wallet
+  ADJUSTMENT  // manual adjustment by admin
+}
+
+// Enum for loyalty point transactions
+enum LoyaltyTransactionType {
+  EARNED      // points earned
+  REDEEMED    // points used
+  EXPIRED     // points expired
+  ADJUSTED    // manual adjustment
+}
+
+// Wallet transactions model
+model WalletTransaction {
+  id          String               @id @default(cuid())
+  userId      String
+  user        User                 @relation(fields: [userId], references: [id])
+  amount      Float
+  type        WalletTransactionType
+  description String?
+  createdAt   DateTime             @default(now())
+}
+
+// Loyalty transactions model
+model LoyaltyTransaction {
+  id          String                 @id @default(cuid())
+  userId      String
+  user        User                   @relation(fields: [userId], references: [id])
+  points      Int
+  type        LoyaltyTransactionType
+  description String?
+  createdAt   DateTime               @default(now())
+}
+
+// =========================== 
+// SLIDER MODULE
+// ===========================
+
+model Slider {
+  id          String     @id @default(uuid())
+  title       String?
+  subtitle    String?
+  description String?
+  imageUrl    String
+  link        String?
+  buttonText  String?
+  buttonLink  String?
+  type        SliderType
+
+  vendorId String?
+  vendor   Vendor? @relation(fields: [vendorId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum SliderType {
+  HOMEPAGE
+  VENDORPAGE
+}
+
+model TermsAndConditions {
+  id          String   @id @default(cuid())
+  title       String
+  slug        String   @unique
+  content     String   // Rich text content from editor
+  version     String   // e.g., "1.0", "2.1" 
+  isActive    Boolean  @default(false) // Only one can be active at a time
+  isPublished Boolean  @default(false)
+  
+  // Admin who created/updated
+  createdById String?
+  createdBy   User?    @relation("TermsCreator", fields: [createdById], references: [id])
+  updatedById String?
+  updatedBy   User?    @relation("TermsUpdater", fields: [updatedById], references: [id])
+  
+  // Timestamps
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  publishedAt DateTime?
+  
+  // Optional: Categorize different types of terms
+  type        TermsType @default(GENERAL)
+  
+  // Optional: Language support
+  language    String   @default("en")
+  
+  // Optional: Metadata
+  metaTitle   String?
+  metaDesc    String?
+  
+  @@map("terms_and_conditions")
+  @@index([isActive, isPublished])
+  @@index([type, isActive])
+}
+
+enum TermsType {
+  GENERAL           // General terms and conditions
+  PRIVACY_POLICY    // Privacy policy
+  VENDOR_AGREEMENT  // Vendor specific terms
+  CUSTOMER_TERMS    // Customer specific terms
+  DELIVERY_TERMS    // Delivery terms
+  RETURN_POLICY     // Return and refund policy
+}

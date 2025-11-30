@@ -13,6 +13,7 @@ router.get("/", CategoryController.getAll);
 
 // ✅ Get category by ID
 router.get("/:id", CategoryController.getById);
+router.get("/bychild-to-parent/:id", CategoryController.getById);
 
 // ✅ Create category (with image upload)
 router.post(

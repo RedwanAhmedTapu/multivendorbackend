@@ -34,6 +34,7 @@ export interface ProductVariantInput {
   name: string;
   sku: string;
   price: number;
+  specialPrice?: number ;
   stock: number;
   weight?: number;
 

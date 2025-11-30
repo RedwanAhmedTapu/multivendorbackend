@@ -26,6 +26,7 @@ export const ProductController = {
     try {
       const { id } = req.params;
       const product = await ProductService.getById(id);
+      console.log(product)
 
       if (!product) {
         return res.status(404).json({ 
@@ -293,9 +294,9 @@ export const ProductController = {
   async filter(req: Request, res: Response) {
     try {
       const filters = req.body;
+      console.log(req.body,"tall")
       
-      // Log filters for debugging
-      console.log("Product filters:", filters);
+      
 
       // Validate filter parameters
       if (filters.minPrice !== undefined && filters.minPrice < 0) {
@@ -320,6 +321,7 @@ export const ProductController = {
       }
 
       const products = await ProductService.filterProducts(filters);
+      console.log(products)
       
       return res.json({ 
         success: true, 

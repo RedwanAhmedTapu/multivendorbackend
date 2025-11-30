@@ -19,6 +19,8 @@ export const ProductService = {
             storeName: true,
             avatar: true,
             status: true,
+            verificationStatus: true,
+
           },
         },
         category: {
@@ -29,29 +31,35 @@ export const ProductService = {
             image: true,
           },
         },
-        images: { 
+        images: {
           orderBy: { sortOrder: "asc" },
         },
         variants: {
           include: {
             images: { orderBy: { sortOrder: "asc" } },
-            attributes: { 
-              include: { 
+            attributes: {
+              include: {
                 attributeValue: {
                   include: {
                     attribute: true,
                   },
                 },
-              } 
+              },
             },
           },
         },
-        specifications: { 
-          include: { 
+        specifications: {
+          include: {
             specification: true,
-          } 
+          },
         },
         warranty: true,
+        reviews: {
+          select: {
+            id: true,
+            rating: true,
+          },
+        },
         approvedBy: {
           select: {
             id: true,
@@ -65,7 +73,7 @@ export const ProductService = {
   },
 
   // ======================
-  // Get product by ID
+  // Get product by ID - FIXED VERSION
   // ======================
   async getById(id: string) {
     return prisma.product.findUnique({
@@ -95,27 +103,27 @@ export const ProductService = {
             },
           },
         },
-        images: { 
+        images: {
           orderBy: { sortOrder: "asc" },
         },
         variants: {
           include: {
             images: { orderBy: { sortOrder: "asc" } },
-            attributes: { 
-              include: { 
+            attributes: {
+              include: {
                 attributeValue: {
                   include: {
-                    attribute: true,
+                    attribute: true, // This should now work with the fixed schema
                   },
                 },
-              } 
+              },
             },
           },
         },
-        specifications: { 
-          include: { 
+        specifications: {
+          include: {
             specification: true,
-          } 
+          },
         },
         warranty: true,
         reviews: {
@@ -145,14 +153,14 @@ export const ProductService = {
   // Get products by vendor ID
   // ======================
   async getByVendorId(
-    vendorId: string, 
+    vendorId: string,
     options?: {
       status?: "PENDING" | "ACTIVE" | "REJECTED";
       includeInactive?: boolean;
     }
   ) {
     const where: any = { vendorId };
-    
+
     // Filter by approval status if provided
     if (options?.status) {
       where.approvalStatus = options.status;
@@ -177,18 +185,18 @@ export const ProductService = {
             image: true,
           },
         },
-        images: { 
+        images: {
           orderBy: { sortOrder: "asc" },
           take: 5,
         },
         variants: {
           include: {
-            images: { 
+            images: {
               orderBy: { sortOrder: "asc" },
               take: 3,
             },
-            attributes: { 
-              include: { 
+            attributes: {
+              include: {
                 attributeValue: {
                   include: {
                     attribute: {
@@ -201,13 +209,13 @@ export const ProductService = {
                     },
                   },
                 },
-              } 
+              },
             },
           },
           orderBy: { createdAt: "asc" },
         },
-        specifications: { 
-          include: { 
+        specifications: {
+          include: {
             specification: {
               select: {
                 id: true,
@@ -217,7 +225,7 @@ export const ProductService = {
                 unit: true,
               },
             },
-          } 
+          },
         },
         warranty: true,
         reviews: {
@@ -233,9 +241,7 @@ export const ProductService = {
           },
         },
       },
-      orderBy: [
-        { createdAt: "desc" },
-      ],
+      orderBy: [{ createdAt: "desc" }],
     });
   },
 
@@ -243,8 +249,8 @@ export const ProductService = {
   // Create product
   // ======================
   async create(
-    data: CreateProductData & { 
-      shippingWarranty?: ProductShippingWarrantyInput; 
+    data: CreateProductData & {
+      shippingWarranty?: ProductShippingWarrantyInput;
       userId?: string;
     }
   ) {
@@ -261,12 +267,12 @@ export const ProductService = {
         approvalStatus: "PENDING", // Default to pending
 
         images: data.images?.length
-          ? { 
-              create: data.images.map((img: ProductImageInput, index) => ({ 
+          ? {
+              create: data.images.map((img: ProductImageInput, index) => ({
                 url: img.url,
                 altText: img.altText || `${data.name} image ${index + 1}`,
                 sortOrder: img.sortOrder ?? index,
-              })) 
+              })),
             }
           : undefined,
 
@@ -282,33 +288,52 @@ export const ProductService = {
 
         variants: data.variants?.length
           ? {
-              create: data.variants.map((variant: ProductVariantInput) => ({
-                name: variant.name,
-                sku: variant.sku,
-                price: variant.price,
-                stock: variant.stock ?? 0,
-                weight: variant.weight ?? 0,
-                
-                attributes: variant.attributes?.length
-                  ? { 
-                      create: variant.attributes.map((attr) => ({ 
-                        attributeValueId: attr.attributeValueId 
-                      })) 
-                    }
-                  : undefined,
-                
-                images: variant.images?.length
-                  ? { 
-                      create: variant.images.map((img, idx) => ({ 
-                        url: typeof img === 'string' ? img : img.url,
-                        altText: typeof img === 'string' 
-                          ? `${variant.name} image ${idx + 1}` 
-                          : img.altText || `${variant.name} image ${idx + 1}`,
-                        sortOrder: typeof img === 'string' ? idx : img.sortOrder ?? idx,
-                      })) 
-                    }
-                  : undefined,
-              })),
+              create: data.variants.map((variant: ProductVariantInput) => {
+                // Auto calculate discount
+                const discount =
+                  variant.specialPrice && variant.price
+                    ? Math.round(
+                        ((variant.price - variant.specialPrice) /
+                          variant.price) *
+                          100
+                      )
+                    : 0;
+
+                return {
+                  name: variant.name,
+                  sku: variant.sku,
+                  price: variant.price,
+                  specialPrice: variant.specialPrice ?? null,
+                  discount: discount, // <-- NEW
+                  stock: variant.stock ?? 0,
+                  weight: variant.weight ?? 0,
+
+                  attributes: variant.attributes?.length
+                    ? {
+                        create: variant.attributes.map((attr) => ({
+                          attributeValueId: attr.attributeValueId,
+                        })),
+                      }
+                    : undefined,
+
+                  images: variant.images?.length
+                    ? {
+                        create: variant.images.map((img, idx) => ({
+                          url: typeof img === "string" ? img : img.url,
+                          altText:
+                            typeof img === "string"
+                              ? `${variant.name} image ${idx + 1}`
+                              : img.altText ||
+                                `${variant.name} image ${idx + 1}`,
+                          sortOrder:
+                            typeof img === "string"
+                              ? idx
+                              : img.sortOrder ?? idx,
+                        })),
+                      }
+                    : undefined,
+                };
+              }),
             }
           : undefined,
 
@@ -316,19 +341,24 @@ export const ProductService = {
           ? {
               create: {
                 packageWeightValue: data.shippingWarranty.packageWeightValue,
-                packageWeightUnit: data.shippingWarranty.packageWeightUnit.toUpperCase() as "KG" | "G",
+                packageWeightUnit:
+                  data.shippingWarranty.packageWeightUnit.toUpperCase() as
+                    | "KG"
+                    | "G",
                 packageLength: data.shippingWarranty.packageLength,
                 packageWidth: data.shippingWarranty.packageWidth,
                 packageHeight: data.shippingWarranty.packageHeight,
-                dangerousGoods: data.shippingWarranty.dangerousGoods === "none" 
-                  ? "NONE" 
-                  : "CONTAINS",
+                dangerousGoods:
+                  data.shippingWarranty.dangerousGoods === "none"
+                    ? "NONE"
+                    : "CONTAINS",
                 duration: data.shippingWarranty.warrantyPeriodValue,
-                unit: data.shippingWarranty.warrantyPeriodUnit === "days"
-                  ? "DAYS"
-                  : data.shippingWarranty.warrantyPeriodUnit === "months"
-                  ? "MONTHS"
-                  : "YEARS",
+                unit:
+                  data.shippingWarranty.warrantyPeriodUnit === "days"
+                    ? "DAYS"
+                    : data.shippingWarranty.warrantyPeriodUnit === "months"
+                    ? "MONTHS"
+                    : "YEARS",
                 policy: data.shippingWarranty.warrantyDetails ?? null,
                 type: data.shippingWarranty.warrantyType,
               },
@@ -351,24 +381,24 @@ export const ProductService = {
           },
         },
         images: { orderBy: { sortOrder: "asc" } },
-        variants: { 
-          include: { 
-            images: { orderBy: { sortOrder: "asc" } }, 
-            attributes: { 
-              include: { 
+        variants: {
+          include: {
+            images: { orderBy: { sortOrder: "asc" } },
+            attributes: {
+              include: {
                 attributeValue: {
                   include: {
                     attribute: true,
                   },
                 },
-              } 
-            } 
-          } 
+              },
+            },
+          },
         },
-        specifications: { 
-          include: { 
+        specifications: {
+          include: {
             specification: true,
-          } 
+          },
         },
         warranty: true,
       },
@@ -430,7 +460,8 @@ export const ProductService = {
         .replace(/\s+/g, "-")
         .replace(/[^a-z0-9-]/g, "");
     }
-    if (data.description !== undefined) updateData.description = data.description;
+    if (data.description !== undefined)
+      updateData.description = data.description;
     if (data.vendorId !== undefined) updateData.vendorId = data.vendorId;
     if (data.categoryId !== undefined) updateData.categoryId = data.categoryId;
 
@@ -460,37 +491,47 @@ export const ProductService = {
         upsert: {
           update: {
             packageWeightValue: data.shippingWarranty.packageWeightValue,
-            packageWeightUnit: data.shippingWarranty.packageWeightUnit.toUpperCase() as "KG" | "G",
+            packageWeightUnit:
+              data.shippingWarranty.packageWeightUnit.toUpperCase() as
+                | "KG"
+                | "G",
             packageLength: data.shippingWarranty.packageLength,
             packageWidth: data.shippingWarranty.packageWidth,
             packageHeight: data.shippingWarranty.packageHeight,
-            dangerousGoods: data.shippingWarranty.dangerousGoods === "none" 
-              ? "NONE" 
-              : "CONTAINS",
+            dangerousGoods:
+              data.shippingWarranty.dangerousGoods === "none"
+                ? "NONE"
+                : "CONTAINS",
             duration: data.shippingWarranty.warrantyPeriodValue,
-            unit: data.shippingWarranty.warrantyPeriodUnit === "days"
-              ? "DAYS"
-              : data.shippingWarranty.warrantyPeriodUnit === "months"
-              ? "MONTHS"
-              : "YEARS",
+            unit:
+              data.shippingWarranty.warrantyPeriodUnit === "days"
+                ? "DAYS"
+                : data.shippingWarranty.warrantyPeriodUnit === "months"
+                ? "MONTHS"
+                : "YEARS",
             policy: data.shippingWarranty.warrantyDetails ?? null,
             type: data.shippingWarranty.warrantyType,
           },
           create: {
             packageWeightValue: data.shippingWarranty.packageWeightValue,
-            packageWeightUnit: data.shippingWarranty.packageWeightUnit.toUpperCase() as "KG" | "G",
+            packageWeightUnit:
+              data.shippingWarranty.packageWeightUnit.toUpperCase() as
+                | "KG"
+                | "G",
             packageLength: data.shippingWarranty.packageLength,
             packageWidth: data.shippingWarranty.packageWidth,
             packageHeight: data.shippingWarranty.packageHeight,
-            dangerousGoods: data.shippingWarranty.dangerousGoods === "none" 
-              ? "NONE" 
-              : "CONTAINS",
+            dangerousGoods:
+              data.shippingWarranty.dangerousGoods === "none"
+                ? "NONE"
+                : "CONTAINS",
             duration: data.shippingWarranty.warrantyPeriodValue,
-            unit: data.shippingWarranty.warrantyPeriodUnit === "days"
-              ? "DAYS"
-              : data.shippingWarranty.warrantyPeriodUnit === "months"
-              ? "MONTHS"
-              : "YEARS",
+            unit:
+              data.shippingWarranty.warrantyPeriodUnit === "days"
+                ? "DAYS"
+                : data.shippingWarranty.warrantyPeriodUnit === "months"
+                ? "MONTHS"
+                : "YEARS",
             policy: data.shippingWarranty.warrantyDetails ?? null,
             type: data.shippingWarranty.warrantyType,
           },
@@ -520,21 +561,21 @@ export const ProductService = {
         variants: {
           include: {
             images: { orderBy: { sortOrder: "asc" } },
-            attributes: { 
-              include: { 
+            attributes: {
+              include: {
                 attributeValue: {
                   include: {
                     attribute: true,
                   },
                 },
-              } 
+              },
             },
           },
         },
-        specifications: { 
-          include: { 
+        specifications: {
+          include: {
             specification: true,
-          } 
+          },
         },
         warranty: true,
         approvedBy: {
@@ -584,11 +625,8 @@ export const ProductService = {
 
     // Delete related records in correct order
     await prisma.productImage.deleteMany({
-      where: { 
-        OR: [
-          { productId: id }, 
-          { variant: { productId: id } }
-        ] 
+      where: {
+        OR: [{ productId: id }, { variant: { productId: id } }],
       },
     });
 
@@ -596,12 +634,12 @@ export const ProductService = {
       where: { variant: { productId: id } },
     });
 
-    await prisma.productVariant.deleteMany({ 
-      where: { productId: id } 
+    await prisma.productVariant.deleteMany({
+      where: { productId: id },
     });
 
-    await prisma.productSpecificationValue.deleteMany({ 
-      where: { productId: id } 
+    await prisma.productSpecificationValue.deleteMany({
+      where: { productId: id },
     });
 
     await prisma.productAttributeSetting.deleteMany({
@@ -617,8 +655,8 @@ export const ProductService = {
     });
 
     // Delete the product
-    const deletedProduct = await prisma.product.delete({ 
-      where: { id } 
+    const deletedProduct = await prisma.product.delete({
+      where: { id },
     });
 
     // Audit log
@@ -719,8 +757,10 @@ export const ProductService = {
           return Array.isArray(valueIds) && valueIds.length > 0;
         })
         .map(([attributeId, valueIds]) => {
-          const validValueIds = Array.isArray(valueIds) ? valueIds : [valueIds].filter(Boolean);
-          
+          const validValueIds = Array.isArray(valueIds)
+            ? valueIds
+            : [valueIds].filter(Boolean);
+
           return {
             variants: {
               some: {
@@ -740,19 +780,30 @@ export const ProductService = {
     }
 
     // Specification filters
-    if (filters.specifications && Object.keys(filters.specifications).length > 0) {
+    if (
+      filters.specifications &&
+      Object.keys(filters.specifications).length > 0
+    ) {
       const specificationConditions = Object.entries(filters.specifications)
         .filter(([_, values]) => Array.isArray(values) && values.length > 0)
         .map(([specId, values]) => {
-          const validValues = Array.isArray(values) ? values : [values].filter(Boolean);
-          
+          const validValues = Array.isArray(values)
+            ? values
+            : [values].filter(Boolean);
+
           return {
             specifications: {
               some: {
                 specificationId: specId,
                 OR: [
                   { valueString: { in: validValues } },
-                  { valueNumber: { in: validValues.map(v => parseFloat(v)).filter(v => !isNaN(v)) } },
+                  {
+                    valueNumber: {
+                      in: validValues
+                        .map((v) => parseFloat(v))
+                        .filter((v) => !isNaN(v)),
+                    },
+                  },
                 ],
               },
             },
@@ -764,85 +815,86 @@ export const ProductService = {
       }
     }
 
-    console.log('Generated where clause:', JSON.stringify(where, null, 2));
-
     try {
       // Fetch products with all relations
       const products = await prisma.product.findMany({
         where,
-        include: {
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          approvalStatus: true,
+          createdAt: true,
+          // Vendor info
           vendor: {
             select: {
               id: true,
               storeName: true,
               avatar: true,
-              status: true,
               verificationStatus: true,
             },
           },
+          // Category info
           category: {
             select: {
               id: true,
               name: true,
               slug: true,
-              image: true,
             },
           },
+          // Main product image
           images: {
             orderBy: { sortOrder: "asc" },
-            take: 5,
+            take: 1,
+            select: {
+              url: true,
+              altText: true,
+            },
           },
+          // Variants for price info
           variants: {
-            include: {
-              images: {
-                orderBy: { sortOrder: "asc" },
-                take: 3,
-              },
-              attributes: {
-                include: {
-                  attributeValue: {
-                    include: {
-                      attribute: {
-                        select: {
-                          id: true,
-                          name: true,
-                          slug: true,
-                          type: true,
-                        },
-                      },
-                    },
-                  },
-                },
-              },
+            take: 1,
+            orderBy: { price: "asc" }, // Get the lowest price variant
+            select: {
+              price: true,
+              specialPrice: true,
+              discount: true,
+              stock: true,
             },
           },
-          specifications: {
-            include: {
-              specification: {
-                select: {
-                  id: true,
-                  name: true,
-                  slug: true,
-                  type: true,
-                  unit: true,
-                },
-              },
-            },
-          },
-          warranty: true,
+          // Reviews for rating calculation
           reviews: {
             select: {
-              id: true,
               rating: true,
             },
           },
+          // Only FREE_SHIPPING offers
+          offerProducts: {
+            where: {
+              offer: {
+                type: "FREE_SHIPPING", // Only free shipping offers
+                isActive: true,
+                status: "ACTIVE",
+                validFrom: { lte: new Date() },
+                OR: [{ validTo: { gte: new Date() } }, { validTo: null }],
+              },
+            },
+            take: 1,
+            select: {
+              offer: {
+                select: {
+                  id: true,
+                  type: true,
+                  title: true,
+                  // Include free shipping specific fields if needed
+                  minOrderAmount: true,
+                },
+              },
+            },
+          },
         },
-        orderBy: [
-          { createdAt: "desc" },
-        ],
+        orderBy: [{ createdAt: "desc" }],
       });
-
-      console.log(`Found ${products.length} products before post-filtering`);
 
       // Post-fetch filtering for complex conditions
       let filteredProducts = products;
@@ -851,9 +903,13 @@ export const ProductService = {
       if (filters.ratings && filters.ratings.length > 0) {
         const minRating = Math.min(...filters.ratings);
         filteredProducts = filteredProducts.filter((product: any) => {
-          const avgRating = product.reviews.length > 0
-            ? product.reviews.reduce((sum: number, r: any) => sum + r.rating, 0) / product.reviews.length
-            : 0;
+          const avgRating =
+            product.reviews.length > 0
+              ? product.reviews.reduce(
+                  (sum: number, r: any) => sum + r.rating,
+                  0
+                ) / product.reviews.length
+              : 0;
           return avgRating >= minRating;
         });
       }
@@ -863,9 +919,10 @@ export const ProductService = {
         filteredProducts = filteredProducts.filter((product: any) => {
           const brandAttributes = product.variants.flatMap((v: any) =>
             v.attributes
-              .filter((a: any) => 
-                a.attributeValue.attribute.slug === "brand" ||
-                a.attributeValue.attribute.name.toLowerCase() === "brand"
+              .filter(
+                (a: any) =>
+                  a.attributeValue.attribute.slug === "brand" ||
+                  a.attributeValue.attribute.name.toLowerCase() === "brand"
               )
               .map((a: any) => a.attributeValue.value)
           );
@@ -887,16 +944,18 @@ export const ProductService = {
       // Filter for on sale (products with compareAtPrice higher than price)
       if (filters.onSale) {
         filteredProducts = filteredProducts.filter((product: any) =>
-          product.variants.some((v: any) => 
-            v.compareAtPrice && v.compareAtPrice > v.price
+          product.variants.some(
+            (v: any) => v.compareAtPrice && v.compareAtPrice > v.price
           )
         );
       }
 
-      console.log(`Found ${filteredProducts.length} products after post-filtering`);
+      console.log(
+        `Found ${filteredProducts.length} products after post-filtering`
+      );
       return filteredProducts;
     } catch (error) {
-      console.error('Database error:', error);
+      console.error("Database error:", error);
       throw error;
     }
   },

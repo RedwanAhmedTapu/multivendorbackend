@@ -38,6 +38,7 @@ import uploadRoutes from "./routes/upload.routes.ts";
 import bulkproducttemplates from "./routes/bulkproductTemplate.routes.ts";
 import categoryFilterRoutes from './routes/categoryFilterRoutes.ts';
 import faqRoutes from './routes/faq.routes.ts'; 
+import themeRoutes from './routes/theme.routes.ts';
 
 // Fix __dirname in ES Module
 const __filename = fileURLToPath(import.meta.url);
@@ -46,7 +47,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const server = createServer(app);
 
-const allowedOrigin =  "https://finixmart.com.bd" ;
+const allowedOrigin =  "http://localhost:3000" ;
 
 // ✅ INCREASE PAYLOAD SIZE LIMIT - Add this before CORS
 app.use(express.json({ limit: '50mb' })); // Increase from default 100kb to 50MB
@@ -104,6 +105,7 @@ app.use('/api/upload', uploadRoutes);
 app.use('/api/bulkproduct-templates', bulkproducttemplates);
 app.use('/api/categories-filter', categoryFilterRoutes);
 app.use('/api/faqs', faqRoutes);
+app.use('/api/themes', themeRoutes);
 
 
 // ✅ Socket.io handlers

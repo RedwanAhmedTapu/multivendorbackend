@@ -11,66 +11,132 @@ export const ProductService = {
   // Get all products
   // ======================
   async getAll() {
-    return prisma.product.findMany({
-      include: {
-        vendor: {
-          select: {
-            id: true,
-            storeName: true,
-            avatar: true,
-            status: true,
-            verificationStatus: true,
+  const now = new Date();
 
-          },
+  return prisma.product.findMany({
+    include: {
+      // ===========================
+      // VENDOR
+      // ===========================
+      vendor: {
+        select: {
+          id: true,
+          storeName: true,
+          avatar: true,
+          status: true,
+          verificationStatus: true,
         },
-        category: {
-          select: {
-            id: true,
-            name: true,
-            slug: true,
-            image: true,
-          },
+      },
+
+      // ===========================
+      // CATEGORY
+      // ===========================
+      category: {
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          image: true,
         },
-        images: {
-          orderBy: { sortOrder: "asc" },
-        },
-        variants: {
-          include: {
-            images: { orderBy: { sortOrder: "asc" } },
-            attributes: {
-              include: {
-                attributeValue: {
-                  include: {
-                    attribute: true,
-                  },
+      },
+
+      // ===========================
+      // PRODUCT IMAGES
+      // ===========================
+      images: {
+        orderBy: { sortOrder: "asc" },
+      },
+
+      // ===========================
+      // VARIANTS
+      // ===========================
+      variants: {
+        include: {
+          images: { orderBy: { sortOrder: "asc" } },
+          attributes: {
+            include: {
+              attributeValue: {
+                include: {
+                  attribute: true,
                 },
               },
             },
           },
         },
-        specifications: {
-          include: {
-            specification: true,
+      },
+
+      // ===========================
+      // SPECIFICATIONS
+      // ===========================
+      specifications: {
+        include: {
+          specification: true,
+        },
+      },
+
+      // ===========================
+      // WARRANTY
+      // ===========================
+      warranty: true,
+
+      // ===========================
+      // REVIEWS
+      // ===========================
+      reviews: {
+        select: {
+          id: true,
+          rating: true,
+        },
+      },
+
+      // ===========================
+      // APPROVED BY ADMIN
+      // ===========================
+      approvedBy: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+        },
+      },
+
+      // ===========================
+      // OFFER: Only FREE_SHIPPING
+      // ===========================
+      offerProducts: {
+        where: {
+          offer: {
+            type: "FREE_SHIPPING",
+            isActive: true,
+            status: "ACTIVE",
+            validFrom: { lte: now },
+            OR: [
+              { validTo: { gte: now } },
+              { validTo: null },
+            ],
           },
         },
-        warranty: true,
-        reviews: {
-          select: {
-            id: true,
-            rating: true,
-          },
-        },
-        approvedBy: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
+        take: 1,
+        select: {
+          offer: {
+            select: {
+              id: true,
+              type: true,
+              title: true,
+              minOrderAmount: true, // free-shipping special field
+            },
           },
         },
       },
-      orderBy: { createdAt: "desc" },
-    });
-  },
+    },
+
+    // ===========================
+    // ORDER
+    // ===========================
+    orderBy: { createdAt: "desc" },
+  });
+}
+,
 
   // ======================
   // Get product by ID - FIXED VERSION

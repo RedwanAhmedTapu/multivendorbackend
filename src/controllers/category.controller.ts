@@ -1,4 +1,3 @@
-// controllers/category.controller.ts
 import type { Request, Response } from "express";
 import { CategoryService } from "../services/category.service.ts";
 import { 
@@ -29,12 +28,10 @@ export const CategoryController = {
   },
 
   async create(req: Request, res: Response) {
-    
     try {
       let imageUrl: string | undefined;
 
       if (req.file) {
-        // Upload to R2 without quota checks
         const fileKey = generateCategoryImageKey(req.file.originalname);
         
         const uploadResult = await uploadToR2Admin({
@@ -46,14 +43,26 @@ export const CategoryController = {
         imageUrl = uploadResult.url;
       }
 
-      const category = await CategoryService.create({
+      // ✅ Parse tags and keywords if they come as strings
+      const categoryData = {
         ...req.body,
         image: imageUrl,
-      });
+        keywords: Array.isArray(req.body.keywords) 
+          ? req.body.keywords 
+          : req.body.keywords 
+            ? JSON.parse(req.body.keywords) 
+            : [],
+        tags: Array.isArray(req.body.tags) 
+          ? req.body.tags 
+          : req.body.tags 
+            ? JSON.parse(req.body.tags) 
+            : [],
+      };
+
+      const category = await CategoryService.create(categoryData);
 
       res.status(201).json(category);
     } catch (error: any) {
-      // Clean up uploaded file if category creation fails
       if (req.file) {
         try {
           const fileKey = generateCategoryImageKey(req.file.originalname);
@@ -66,7 +75,7 @@ export const CategoryController = {
     }
   },
 
-  async update(req: Request, res: Response) {
+   async update(req: Request, res: Response) {
     try {
       const existingCategory = await CategoryService.getById(req.params.id);
       if (!existingCategory) {
@@ -77,12 +86,10 @@ export const CategoryController = {
       let oldFileKey: string | null = null;
 
       if (req.file) {
-        // Store old file key for cleanup
         if (existingCategory.image) {
           oldFileKey = extractFileKeyFromUrl(existingCategory.image);
         }
 
-        // Upload new image to R2
         const newFileKey = generateCategoryImageKey(req.file.originalname);
         
         const uploadResult = await uploadToR2Admin({
@@ -94,12 +101,52 @@ export const CategoryController = {
         imageUrl = uploadResult.url;
       }
 
-      const category = await CategoryService.update(req.params.id, {
+      // ✅ FIXED: Handle keywords and tags properly
+      const updateData: any = {
         ...req.body,
         image: imageUrl,
-      });
+      };
 
-      // Delete old image after successful update
+      // Handle keywords - convert comma-separated string to array
+      if (req.body.keywords !== undefined) {
+        if (typeof req.body.keywords === 'string') {
+          if (req.body.keywords.trim() === '') {
+            updateData.keywords = [];
+          } else {
+            // Split by comma and trim each keyword
+            updateData.keywords = req.body.keywords
+              .split(',')
+              .map((k: string) => k.trim())
+              .filter((k: string) => k.length > 0);
+          }
+        } else if (Array.isArray(req.body.keywords)) {
+          updateData.keywords = req.body.keywords;
+        }
+        // If it's already an array, keep it as is
+      }
+
+      // Handle tags - convert comma-separated string to array
+      if (req.body.tags !== undefined) {
+        if (typeof req.body.tags === 'string') {
+          if (req.body.tags.trim() === '') {
+            updateData.tags = [];
+          } else {
+            // Split by comma and trim each tag
+            updateData.tags = req.body.tags
+              .split(',')
+              .map((t: string) => t.trim())
+              .filter((t: string) => t.length > 0);
+          }
+        } else if (Array.isArray(req.body.tags)) {
+          updateData.tags = req.body.tags;
+        }
+        // If it's already an array, keep it as is
+      }
+
+      console.log("Update data being sent to service:", updateData);
+
+      const category = await CategoryService.update(req.params.id, updateData);
+
       if (oldFileKey) {
         try {
           await deleteFromR2Admin(oldFileKey);
@@ -110,6 +157,7 @@ export const CategoryController = {
 
       res.json(category);
     } catch (error: any) {
+      console.log("Update error:", error);
       res.status(400).json({ message: error.message });
     }
   },
@@ -121,7 +169,6 @@ export const CategoryController = {
         return res.status(404).json({ message: "Category not found" });
       }
 
-      // Delete image from R2 if exists
       if (category.image) {
         try {
           const fileKey = extractFileKeyFromUrl(category.image);
@@ -140,7 +187,6 @@ export const CategoryController = {
     }
   },
 
-  // Upload image only, get URL
   async uploadImage(req: Request, res: Response) {
     try {
       if (!req.file) return res.status(400).json({ message: "No file uploaded" });
@@ -162,6 +208,43 @@ export const CategoryController = {
       });
     } catch (error: any) {
       res.status(400).json({ message: error.message });
+    }
+  },
+
+  // ✅ NEW: Search categories
+  async search(req: Request, res: Response) {
+    try {
+      const { q } = req.query;
+      if (!q || typeof q !== 'string') {
+        return res.status(400).json({ message: "Query parameter 'q' is required" });
+      }
+
+      const categories = await CategoryService.search(q);
+      res.json(categories);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  },
+
+  // ✅ NEW: Get categories by tag
+  async getByTag(req: Request, res: Response) {
+    try {
+      const { tag } = req.params;
+      const categories = await CategoryService.getByTag(tag);
+      res.json(categories);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
+    }
+  },
+
+  // ✅ NEW: Get categories by keyword
+  async getByKeyword(req: Request, res: Response) {
+    try {
+      const { keyword } = req.params;
+      const categories = await CategoryService.getByKeyword(keyword);
+      res.json(categories);
+    } catch (error: any) {
+      res.status(500).json({ message: error.message });
     }
   },
 };

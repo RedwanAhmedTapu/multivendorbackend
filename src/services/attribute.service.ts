@@ -8,18 +8,19 @@ export const AttributeService = {
       orderBy: { name: "asc" },
     });
   },
+
   async getAll(categoryId: string) {
     return prisma.categoryAttribute.findMany({
       where: { categoryId },
       include: {
         attribute: { include: { values: true } },
       },
-      orderBy: { attribute: { name: "asc" } },
+      orderBy: { sortOrder: "asc" },
     });
   },
 
   async create(data: any) {
-    const { categoryId, name, type, filterable, required, values = [] } = data;
+    const { categoryId, name, type, filterable, required, values = [], unit } = data;
 
     const slug = name.toLowerCase().replace(/\s+/g, "-");
 
@@ -29,9 +30,18 @@ export const AttributeService = {
 
       if (!attribute) {
         attribute = await tx.attribute.create({
-          data: { name, slug, type },
+          data: { name, slug, type, unit },
         });
       }
+
+      // Get the next sort order for this category
+      const maxOrder = await tx.categoryAttribute.findFirst({
+        where: { categoryId },
+        orderBy: { sortOrder: "desc" },
+        select: { sortOrder: true },
+      });
+
+      const nextSortOrder = (maxOrder?.sortOrder ?? -1) + 1;
 
       // Link attribute to category
       const categoryAttribute = await tx.categoryAttribute.upsert({
@@ -43,20 +53,20 @@ export const AttributeService = {
         },
         update: {
           isRequired: required,
-          isForVariant: true,
           filterable,
+          sortOrder: nextSortOrder,
         },
         create: {
           categoryId,
           attributeId: attribute.id,
           isRequired: required,
-          isForVariant: true,
           filterable,
+          sortOrder: nextSortOrder,
         },
       });
 
-      // Add values only if attribute is SELECT and they don’t already exist
-      if (values.length && type === "SELECT") {
+      // Add values only if attribute is SELECT/MULTISELECT and they don't already exist
+      if (values.length && (type === "SELECT" || type === "MULTISELECT")) {
         const existingValues = await tx.attributeValue.findMany({
           where: { attributeId: attribute.id },
         });
@@ -94,16 +104,40 @@ export const AttributeService = {
       slug = data.name.toLowerCase().replace(/\s+/g, "-");
     }
 
-    await prisma.attribute.update({
-      where: { id: categoryAttribute.attributeId },
-      data: { name: data.name, slug, type: data.type },
-    });
+    return prisma.$transaction(async (tx) => {
+      // Update global attribute
+      await tx.attribute.update({
+        where: { id: categoryAttribute.attributeId },
+        data: { 
+          name: data.name, 
+          slug, 
+          type: data.type,
+          unit: data.unit 
+        },
+      });
 
-    return prisma.categoryAttribute.update({
-      where: { id: categoryAttributeId },
-      data: { isRequired: data.required, filterable: data.filterable },
-      include: { attribute: { include: { values: true } } },
+      // Update category-attribute link
+      return tx.categoryAttribute.update({
+        where: { id: categoryAttributeId },
+        data: { 
+          isRequired: data.required, 
+          filterable: data.filterable,
+          sortOrder: data.sortOrder,
+        },
+        include: { attribute: { include: { values: true } } },
+      });
     });
+  },
+
+  async updateSortOrder(categoryId: string, attributeOrders: { id: string; sortOrder: number }[]) {
+    return prisma.$transaction(
+      attributeOrders.map(({ id, sortOrder }) =>
+        prisma.categoryAttribute.update({
+          where: { id, categoryId },
+          data: { sortOrder },
+        })
+      )
+    );
   },
 
   async delete(categoryAttributeId: string) {
@@ -113,6 +147,15 @@ export const AttributeService = {
     });
 
     if (!categoryAttribute) throw new Error("CategoryAttribute not found");
+
+    // Check if attribute is used in product attributes (specs or variants)
+    const productAttributes = await prisma.productAttribute.findFirst({
+      where: { attributeId: categoryAttribute.attributeId },
+    });
+
+    if (productAttributes) {
+      throw new Error("Cannot delete attribute: it's being used in products");
+    }
 
     // Check if attribute is used in product variants
     const variantAttributes = await prisma.productVariantAttribute.findFirst({
@@ -124,7 +167,7 @@ export const AttributeService = {
     });
 
     if (variantAttributes) {
-      throw new Error("Cannot delete attribute: it's being used in products");
+      throw new Error("Cannot delete attribute: it's being used in product variants");
     }
 
     return prisma.$transaction(async (tx) => {
@@ -154,12 +197,44 @@ export const AttributeService = {
   },
 
   async addValue(attributeId: string, value: string) {
+    // Check if value already exists
+    const existing = await prisma.attributeValue.findUnique({
+      where: {
+        attributeId_value: {
+          attributeId,
+          value: value.trim(),
+        },
+      },
+    });
+
+    if (existing) {
+      throw new Error("Value already exists for this attribute");
+    }
+
     return prisma.attributeValue.create({
       data: { attributeId, value: value.trim() },
     });
   },
 
   async deleteValue(id: string) {
+    // Check if value is used in product attributes
+    const productAttributes = await prisma.productAttribute.findFirst({
+      where: { attributeValueId: id },
+    });
+
+    if (productAttributes) {
+      throw new Error("Cannot delete value: it's being used in product attributes");
+    }
+
+    // Check if value is used in variants
+    const variantAttributes = await prisma.productVariantAttribute.findFirst({
+      where: { attributeValueId: id },
+    });
+
+    if (variantAttributes) {
+      throw new Error("Cannot delete value: it's being used in product variants");
+    }
+
     return prisma.attributeValue.delete({ where: { id } });
   },
 };

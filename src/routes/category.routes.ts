@@ -11,8 +11,19 @@ const router = Router();
 // ✅ Get all categories
 router.get("/", CategoryController.getAll);
 
+// ✅ NEW: Search categories
+router.get("/search", CategoryController.search);
+
+// ✅ NEW: Get categories by tag
+router.get("/tag/:tag", CategoryController.getByTag);
+
+// ✅ NEW: Get categories by keyword
+router.get("/keyword/:keyword", CategoryController.getByKeyword);
+
 // ✅ Get category by ID
 router.get("/:id", CategoryController.getById);
+
+// ✅ Get category by child-to-parent (same as getById)
 router.get("/bychild-to-parent/:id", CategoryController.getById);
 
 // ✅ Create category (with image upload)
@@ -20,7 +31,7 @@ router.post(
   "/",
   authenticateUser,
   authorizeRoles("ADMIN"),
-  categoryimageUpload("category", "ADMIN", undefined, 1, "image"), // ✅ expects "image"
+  categoryimageUpload("category", "ADMIN", undefined, 1, "image"),
   CategoryController.create
 );
 
@@ -29,7 +40,7 @@ router.put(
   "/:id",
   authenticateUser,
   authorizeRoles("ADMIN"),
-  categoryimageUpload("category", "ADMIN", undefined, 1, "image"), // ✅ expects "image"
+  categoryimageUpload("category", "ADMIN", undefined, 1, "image"),
   CategoryController.update
 );
 
@@ -41,12 +52,12 @@ router.delete(
   CategoryController.remove
 );
 
-// ✅ Upload image only (for pre-uploaded image URLs)
+// ✅ Upload image only
 router.post(
   "/upload-image",
   authenticateUser,
   authorizeRoles("ADMIN"),
-  categoryimageUpload("category", "ADMIN", undefined, 1, "image"), // ✅ expects "image"
+  categoryimageUpload("category", "ADMIN", undefined, 1, "image"),
   CategoryController.uploadImage
 );
 

@@ -1,4 +1,6 @@
+// services/product.service.ts
 import { prisma } from "../config/prisma.ts";
+
 import type {
   CreateProductData,
   ProductImageInput,
@@ -11,135 +13,99 @@ export const ProductService = {
   // Get all products
   // ======================
   async getAll() {
-  const now = new Date();
+    const now = new Date();
 
-  return prisma.product.findMany({
-    include: {
-      // ===========================
-      // VENDOR
-      // ===========================
-      vendor: {
-        select: {
-          id: true,
-          storeName: true,
-          avatar: true,
-          status: true,
-          verificationStatus: true,
+    return prisma.product.findMany({
+      include: {
+        vendor: {
+          select: {
+            id: true,
+            storeName: true,
+            avatar: true,
+            status: true,
+            verificationStatus: true,
+          },
         },
-      },
-
-      // ===========================
-      // CATEGORY
-      // ===========================
-      category: {
-        select: {
-          id: true,
-          name: true,
-          slug: true,
-          image: true,
+        category: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+            image: true,
+          },
         },
-      },
-
-      // ===========================
-      // PRODUCT IMAGES
-      // ===========================
-      images: {
-        orderBy: { sortOrder: "asc" },
-      },
-
-      // ===========================
-      // VARIANTS
-      // ===========================
-      variants: {
-        include: {
-          images: { orderBy: { sortOrder: "asc" } },
-          attributes: {
-            include: {
-              attributeValue: {
-                include: {
-                  attribute: true,
+        images: {
+          orderBy: { sortOrder: "asc" },
+        },
+        variants: {
+          include: {
+            images: { orderBy: { sortOrder: "asc" } },
+            attributes: {
+              include: {
+                attributeValue: {
+                  include: {
+                    attribute: true,
+                  },
                 },
               },
             },
           },
         },
-      },
-
-      // ===========================
-      // SPECIFICATIONS
-      // ===========================
-      specifications: {
-        include: {
-          specification: true,
-        },
-      },
-
-      // ===========================
-      // WARRANTY
-      // ===========================
-      warranty: true,
-
-      // ===========================
-      // REVIEWS
-      // ===========================
-      reviews: {
-        select: {
-          id: true,
-          rating: true,
-        },
-      },
-
-      // ===========================
-      // APPROVED BY ADMIN
-      // ===========================
-      approvedBy: {
-        select: {
-          id: true,
-          name: true,
-          email: true,
-        },
-      },
-
-      // ===========================
-      // OFFER: Only FREE_SHIPPING
-      // ===========================
-      offerProducts: {
-        where: {
-          offer: {
-            type: "FREE_SHIPPING",
-            isActive: true,
-            status: "ACTIVE",
-            validFrom: { lte: now },
-            OR: [
-              { validTo: { gte: now } },
-              { validTo: null },
-            ],
+        attributes: {
+          where: {
+            isForVariant: false, // Only specifications
+          },
+          include: {
+            attribute: true,
+            attributeValue: true, // For SELECT/MULTISELECT types
           },
         },
-        take: 1,
-        select: {
-          offer: {
-            select: {
-              id: true,
-              type: true,
-              title: true,
-              minOrderAmount: true, // free-shipping special field
+        warranty: true,
+        reviews: {
+          select: {
+            id: true,
+            rating: true,
+          },
+        },
+        approvedBy: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+        offerProducts: {
+          where: {
+            offer: {
+              type: "FREE_SHIPPING",
+              isActive: true,
+              status: "ACTIVE",
+              validFrom: { lte: now },
+              OR: [
+                { validTo: { gte: now } },
+                { validTo: null },
+              ],
+            },
+          },
+          take: 1,
+          select: {
+            offer: {
+              select: {
+                id: true,
+                type: true,
+                title: true,
+                minOrderAmount: true,
+              },
             },
           },
         },
       },
-    },
-
-    // ===========================
-    // ORDER
-    // ===========================
-    orderBy: { createdAt: "desc" },
-  });
-}
-,
+      orderBy: { createdAt: "desc" },
+    });
+  },
 
   // ======================
-  // Get product by ID - FIXED VERSION
+  // Get product by ID
   // ======================
   async getById(id: string) {
     return prisma.product.findUnique({
@@ -179,16 +145,20 @@ export const ProductService = {
               include: {
                 attributeValue: {
                   include: {
-                    attribute: true, // This should now work with the fixed schema
+                    attribute: true,
                   },
                 },
               },
             },
           },
         },
-        specifications: {
+        attributes: {
+          where: {
+            isForVariant: false, // Only specifications
+          },
           include: {
-            specification: true,
+            attribute: true,
+            attributeValue: true,
           },
         },
         warranty: true,
@@ -227,7 +197,6 @@ export const ProductService = {
   ) {
     const where: any = { vendorId };
 
-    // Filter by approval status if provided
     if (options?.status) {
       where.approvalStatus = options.status;
     }
@@ -280,9 +249,12 @@ export const ProductService = {
           },
           orderBy: { createdAt: "asc" },
         },
-        specifications: {
+        attributes: {
+          where: {
+            isForVariant: false, // Only specifications
+          },
           include: {
-            specification: {
+            attribute: {
               select: {
                 id: true,
                 name: true,
@@ -291,6 +263,7 @@ export const ProductService = {
                 unit: true,
               },
             },
+            attributeValue: true,
           },
         },
         warranty: true,
@@ -330,7 +303,7 @@ export const ProductService = {
           .replace(/[^a-z0-9-]/g, ""),
         vendorId: data.vendorId,
         categoryId: data.categoryId,
-        approvalStatus: "PENDING", // Default to pending
+        approvalStatus: "PENDING",
 
         images: data.images?.length
           ? {
@@ -342,13 +315,29 @@ export const ProductService = {
             }
           : undefined,
 
-        specifications: data.specifications?.length
+        // Create specifications using ProductAttribute with isForVariant: false
+        attributes: data.attributes?.length
           ? {
-              create: data.specifications.map((spec) => ({
-                specificationId: spec.specificationId,
-                valueString: spec.valueString ?? null,
-                valueNumber: spec.valueNumber ?? null,
-              })),
+              create: data.attributes.map((spec) => {
+                const attributeData: any = {
+                  attributeId: spec.attributeId,
+                  isForVariant: false,
+                };
+
+                // Handle different attribute types
+                if (spec.valueString !== undefined) {
+                  attributeData.valueString = spec.valueString;
+                } else if (spec.valueNumber !== undefined) {
+                  attributeData.valueNumber = spec.valueNumber;
+                } else if (spec.valueBoolean !== undefined) {
+                  attributeData.valueBoolean = spec.valueBoolean;
+                } else if (spec.attributeValueId) {
+                  // For SELECT/MULTISELECT types
+                  attributeData.attributeValueId = spec.attributeValueId;
+                }
+
+                return attributeData;
+              }),
             }
           : undefined,
 
@@ -370,9 +359,8 @@ export const ProductService = {
                   sku: variant.sku,
                   price: variant.price,
                   specialPrice: variant.specialPrice ?? null,
-                  discount: discount, // <-- NEW
+                  discount: discount,
                   stock: variant.stock ?? 0,
-                  weight: variant.weight ?? 0,
 
                   attributes: variant.attributes?.length
                     ? {
@@ -461,9 +449,13 @@ export const ProductService = {
             },
           },
         },
-        specifications: {
+        attributes: {
+          where: {
+            isForVariant: false,
+          },
           include: {
-            specification: true,
+            attribute: true,
+            attributeValue: true,
           },
         },
         warranty: true,
@@ -498,6 +490,13 @@ export const ProductService = {
     data: Partial<CreateProductData> & {
       shippingWarranty?: ProductShippingWarrantyInput;
       images?: ProductImageInput[];
+      specifications?: Array<{
+        attributeId: string;
+        valueString?: string;
+        valueNumber?: number;
+        valueBoolean?: boolean;
+        attributeValueId?: string;
+      }>;
       status?: "PENDING" | "ACTIVE" | "REJECTED";
       approvedById?: string;
       userId?: string;
@@ -548,6 +547,31 @@ export const ProductService = {
           altText: img.altText || `Product image ${index + 1}`,
           sortOrder: img.sortOrder ?? index,
         })),
+      };
+    }
+
+    // Handle specifications update
+    if (data.specifications && data.specifications.length > 0) {
+      updateData.attributes = {
+        deleteMany: { productId: id, isForVariant: false },
+        create: data.specifications.map((spec) => {
+          const attributeData: any = {
+            attributeId: spec.attributeId,
+            isForVariant: false,
+          };
+
+          if (spec.valueString !== undefined) {
+            attributeData.valueString = spec.valueString;
+          } else if (spec.valueNumber !== undefined) {
+            attributeData.valueNumber = spec.valueNumber;
+          } else if (spec.valueBoolean !== undefined) {
+            attributeData.valueBoolean = spec.valueBoolean;
+          } else if (spec.attributeValueId) {
+            attributeData.attributeValueId = spec.attributeValueId;
+          }
+
+          return attributeData;
+        }),
       };
     }
 
@@ -638,9 +662,13 @@ export const ProductService = {
             },
           },
         },
-        specifications: {
+        attributes: {
+          where: {
+            isForVariant: false,
+          },
           include: {
-            specification: true,
+            attribute: true,
+            attributeValue: true,
           },
         },
         warranty: true,
@@ -662,7 +690,6 @@ export const ProductService = {
           action: "UPDATE",
           entity: "Product",
           entityId: id,
-          oldData: oldProduct,
           newData: {
             name: updatedProduct.name,
             approvalStatus: updatedProduct.approvalStatus,
@@ -704,11 +731,8 @@ export const ProductService = {
       where: { productId: id },
     });
 
-    await prisma.productSpecificationValue.deleteMany({
-      where: { productId: id },
-    });
-
-    await prisma.productAttributeSetting.deleteMany({
+    // Delete ProductAttribute records (handles both specifications and variant settings)
+    await prisma.productAttribute.deleteMany({
       where: { productId: id },
     });
 
@@ -733,7 +757,6 @@ export const ProductService = {
           action: "DELETE",
           entity: "Product",
           entityId: id,
-          oldData: product,
         },
       });
     }
@@ -761,29 +784,24 @@ export const ProductService = {
     search?: string;
     approvalStatus?: "PENDING" | "ACTIVE" | "REJECTED";
   }) {
-    // Build where clause dynamically
     const where: any = {
       approvalStatus: filters.approvalStatus || "ACTIVE",
     };
 
-    // Vendor ID filter (for single vendor)
     if (filters.vendorId) {
       where.vendorId = filters.vendorId;
     }
 
-    // Category filter - handle both single categoryId and multiple categoryIds
     if (filters.categoryIds && filters.categoryIds.length > 0) {
       where.categoryId = { in: filters.categoryIds };
     } else if (filters.categoryId) {
       where.categoryId = filters.categoryId;
     }
 
-    // Vendor filter (for multiple vendors)
     if (filters.vendors && filters.vendors.length > 0) {
       where.vendorId = { in: filters.vendors };
     }
 
-    // Search filter
     if (filters.search) {
       where.OR = [
         { name: { contains: filters.search, mode: "insensitive" } },
@@ -791,10 +809,8 @@ export const ProductService = {
       ];
     }
 
-    // Initialize variants conditions array
     const variantsConditions: any[] = [];
 
-    // Price range filter
     if (filters.minPrice !== undefined || filters.maxPrice !== undefined) {
       const priceCondition: any = {};
       if (filters.minPrice !== undefined) priceCondition.gte = filters.minPrice;
@@ -802,12 +818,10 @@ export const ProductService = {
       variantsConditions.push({ price: priceCondition });
     }
 
-    // Stock availability filter
     if (filters.inStock) {
       variantsConditions.push({ stock: { gt: 0 } });
     }
 
-    // Add variants conditions to where clause if any exist
     if (variantsConditions.length > 0) {
       where.variants = {
         some: {
@@ -816,7 +830,7 @@ export const ProductService = {
       };
     }
 
-    // Attribute filters
+    // Attribute filters (for variant attributes)
     if (filters.attributes && Object.keys(filters.attributes).length > 0) {
       const attributeConditions = Object.entries(filters.attributes)
         .filter(([_, valueIds]) => {
@@ -845,22 +859,23 @@ export const ProductService = {
       }
     }
 
-    // Specification filters
+    // Specification filters (using ProductAttribute with isForVariant: false)
     if (
       filters.specifications &&
       Object.keys(filters.specifications).length > 0
     ) {
       const specificationConditions = Object.entries(filters.specifications)
         .filter(([_, values]) => Array.isArray(values) && values.length > 0)
-        .map(([specId, values]) => {
+        .map(([attributeId, values]) => {
           const validValues = Array.isArray(values)
             ? values
             : [values].filter(Boolean);
 
           return {
-            specifications: {
+            attributes: {
               some: {
-                specificationId: specId,
+                attributeId: attributeId,
+                isForVariant: false, // Only specifications
                 OR: [
                   { valueString: { in: validValues } },
                   {
@@ -868,6 +883,11 @@ export const ProductService = {
                       in: validValues
                         .map((v) => parseFloat(v))
                         .filter((v) => !isNaN(v)),
+                    },
+                  },
+                  {
+                    attributeValue: {
+                      value: { in: validValues },
                     },
                   },
                 ],
@@ -882,7 +902,6 @@ export const ProductService = {
     }
 
     try {
-      // Fetch products with all relations
       const products = await prisma.product.findMany({
         where,
         select: {
@@ -891,7 +910,6 @@ export const ProductService = {
           slug: true,
           approvalStatus: true,
           createdAt: true,
-          // Vendor info
           vendor: {
             select: {
               id: true,
@@ -900,7 +918,6 @@ export const ProductService = {
               verificationStatus: true,
             },
           },
-          // Category info
           category: {
             select: {
               id: true,
@@ -908,7 +925,6 @@ export const ProductService = {
               slug: true,
             },
           },
-          // Main product image
           images: {
             orderBy: { sortOrder: "asc" },
             take: 1,
@@ -917,10 +933,9 @@ export const ProductService = {
               altText: true,
             },
           },
-          // Variants for price info
           variants: {
             take: 1,
-            orderBy: { price: "asc" }, // Get the lowest price variant
+            orderBy: { price: "asc" },
             select: {
               price: true,
               specialPrice: true,
@@ -928,17 +943,15 @@ export const ProductService = {
               stock: true,
             },
           },
-          // Reviews for rating calculation
           reviews: {
             select: {
               rating: true,
             },
           },
-          // Only FREE_SHIPPING offers
           offerProducts: {
             where: {
               offer: {
-                type: "FREE_SHIPPING", // Only free shipping offers
+                type: "FREE_SHIPPING",
                 isActive: true,
                 status: "ACTIVE",
                 validFrom: { lte: new Date() },
@@ -952,7 +965,6 @@ export const ProductService = {
                   id: true,
                   type: true,
                   title: true,
-                  // Include free shipping specific fields if needed
                   minOrderAmount: true,
                 },
               },
@@ -962,10 +974,8 @@ export const ProductService = {
         orderBy: [{ createdAt: "desc" }],
       });
 
-      // Post-fetch filtering for complex conditions
       let filteredProducts = products;
 
-      // Filter by rating
       if (filters.ratings && filters.ratings.length > 0) {
         const minRating = Math.min(...filters.ratings);
         filteredProducts = filteredProducts.filter((product: any) => {
@@ -980,7 +990,6 @@ export const ProductService = {
         });
       }
 
-      // Filter by brands
       if (filters.brands && filters.brands.length > 0) {
         filteredProducts = filteredProducts.filter((product: any) => {
           const brandAttributes = product.variants.flatMap((v: any) =>
@@ -998,7 +1007,6 @@ export const ProductService = {
         });
       }
 
-      // Filter for new arrivals
       if (filters.newArrivals) {
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
@@ -1007,11 +1015,10 @@ export const ProductService = {
         );
       }
 
-      // Filter for on sale (products with compareAtPrice higher than price)
       if (filters.onSale) {
         filteredProducts = filteredProducts.filter((product: any) =>
           product.variants.some(
-            (v: any) => v.compareAtPrice && v.compareAtPrice > v.price
+            (v: any) => v.specialPrice && v.specialPrice < v.price
           )
         );
       }
@@ -1045,5 +1052,146 @@ export const ProductService = {
       active,
       rejected,
     };
+  },
+
+  // ======================
+  // Additional Helper Methods
+  // ======================
+
+  // Get products by category
+  async getByCategoryId(categoryId: string) {
+    return prisma.product.findMany({
+      where: { 
+        categoryId,
+        approvalStatus: "ACTIVE"
+      },
+      include: {
+        vendor: {
+          select: {
+            id: true,
+            storeName: true,
+            avatar: true,
+          },
+        },
+        images: {
+          orderBy: { sortOrder: "asc" },
+          take: 1,
+        },
+        variants: {
+          take: 1,
+          orderBy: { price: "asc" },
+          select: {
+            price: true,
+            specialPrice: true,
+            discount: true,
+            stock: true,
+          },
+        },
+        reviews: {
+          select: {
+            rating: true,
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+  },
+
+  // Get featured products
+  async getFeatured(limit: number = 10) {
+    return prisma.product.findMany({
+      where: { 
+        approvalStatus: "ACTIVE",
+        variants: {
+          some: {
+            discount: { gt: 0 }, // Products with discounts
+          },
+        },
+      },
+      include: {
+        vendor: {
+          select: {
+            id: true,
+            storeName: true,
+            avatar: true,
+          },
+        },
+        images: {
+          orderBy: { sortOrder: "asc" },
+          take: 1,
+        },
+        variants: {
+          take: 1,
+          orderBy: { price: "asc" },
+          select: {
+            price: true,
+            specialPrice: true,
+            discount: true,
+            stock: true,
+          },
+        },
+        reviews: {
+          select: {
+            rating: true,
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+    });
+  },
+
+  // Update product stock
+  async updateStock(productId: string, variantId: string, quantity: number) {
+    return prisma.productVariant.update({
+      where: { id: variantId },
+      data: {
+        stock: {
+          decrement: quantity,
+        },
+      },
+    });
+  },
+
+  // Approve product
+  async approveProduct(id: string, adminId: string) {
+    return this.update(id, {
+      status: "ACTIVE",
+      approvedById: adminId,
+    });
+  },
+
+  // Reject product
+  async rejectProduct(id: string, adminId: string) {
+    return this.update(id, {
+      status: "REJECTED",
+      approvedById: adminId,
+    });
+  },
+
+  // Get products needing approval
+  async getPendingApproval() {
+    return prisma.product.findMany({
+      where: { approvalStatus: "PENDING" },
+      include: {
+        vendor: {
+          select: {
+            id: true,
+            storeName: true,
+            avatar: true,
+          },
+        },
+        category: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        images: {
+          take: 1,
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
   },
 };

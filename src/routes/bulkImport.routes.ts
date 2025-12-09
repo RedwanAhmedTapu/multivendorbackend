@@ -6,5 +6,6 @@ const upload = multer({ dest: "uploads/" });
 const router = Router();
 
 router.post("/", upload.single("file"), BulkImportController.upload);
+router.post("/category-template", upload.single("file"), BulkImportController.upload);
 
 export default router;

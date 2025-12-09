@@ -1,10 +1,9 @@
-// services/category.service.ts
 import { prisma } from "../config/prisma.ts";
 
 export const CategoryService = {
   /**
    * Get all categories with unlimited nested layers
-   * Attributes and specifications (with options) are included only at leaf categories
+   * Attributes (unified) are included only at leaf categories
    */
   async getAll() {
     const categories = await prisma.category.findMany({
@@ -19,31 +18,26 @@ export const CategoryService = {
       let transformedCategory: any = { ...category, children: [] };
 
       if (children.length > 0) {
-        // Not leaf
+        // Not leaf - has children
         transformedCategory.children = await Promise.all(children.map(buildHierarchy));
       } else {
-        // Leaf category: include attributes & specifications
+        // Leaf category: include unified attributes with their values
         const attributes = await prisma.categoryAttribute.findMany({
           where: { categoryId: category.id },
-          include: { attribute: { include: { values: true } } },
-        });
-
-        const specifications = await prisma.categorySpecification.findMany({
-          where: { categoryId: category.id },
-          include: { specification: { include: { options: true } } },
+          include: { 
+            attribute: { 
+              include: { values: true } 
+            } 
+          },
+          orderBy: { sortOrder: 'asc' }, // ✅ NEW: Order by sortOrder
         });
 
         transformedCategory.attributes = attributes.map(a => ({
           ...a.attribute,
+          categoryAttributeId: a.id,
           isRequired: a.isRequired,
-          isForVariant: a.isForVariant,
           filterable: a.filterable,
-        }));
-
-        transformedCategory.specifications = specifications.map(s => ({
-          ...s.specification,
-          isRequired: s.isRequired,
-          filterable: s.filterable,
+          sortOrder: a.sortOrder, // ✅ NEW
         }));
       }
 
@@ -55,7 +49,7 @@ export const CategoryService = {
 
   /**
    * Get a category by ID with unlimited nested layers
-   * Attributes/specifications (with options) only on leaf nodes
+   * Attributes only on leaf nodes
    */
   async getById(id: string) {
     const category = await prisma.category.findUnique({ where: { id } });
@@ -70,25 +64,19 @@ export const CategoryService = {
       } else {
         const attributes = await prisma.categoryAttribute.findMany({
           where: { categoryId: cat.id },
-          include: { attribute: { include: { values: true } } },
-        });
-
-        const specifications = await prisma.categorySpecification.findMany({
-          where: { categoryId: cat.id },
-          include: { specification: { include: { options: true } } },
+          include: { 
+            attribute: { 
+              include: { values: true } 
+            } 
+          },
+          orderBy: { sortOrder: 'asc' },
         });
 
         transformedCat.attributes = attributes.map(a => ({
           ...a.attribute,
           isRequired: a.isRequired,
-          isForVariant: a.isForVariant,
           filterable: a.filterable,
-        }));
-
-        transformedCat.specifications = specifications.map(s => ({
-          ...s.specification,
-          isRequired: s.isRequired,
-          filterable: s.filterable,
+          sortOrder: a.sortOrder,
         }));
       }
 
@@ -98,30 +86,47 @@ export const CategoryService = {
     return await buildHierarchy(category);
   },
 
+  /**
+   * Create a new category with tags and keywords
+   */
   async create(data: any) {
     console.log(data);
     return prisma.category.create({
       data: {
         name: data.name,
-        slug: data.slug.toLowerCase().replace(/\s+/g, "-"), // do NOT append number
+        slug: data.slug.toLowerCase().replace(/\s+/g, "-"),
         image: data.image,
         parentId: data.parentId || null,
+        // ✅ NEW: Tags and keywords support
+        keywords: data.keywords || [], // Array of strings
+        tags: data.tags || [], // Array of strings
       },
     });
   },
 
+  /**
+   * Update category with tags and keywords
+   */
   async update(id: string, data: any) {
+    const updateData: any = {
+      name: data.name,
+      slug: data.slug?.toLowerCase().replace(/\s+/g, "-"),
+      image: data.image,
+      parentId: data.parentId,
+    };
+
+    if (data.keywords !== undefined) updateData.keywords = data.keywords;
+    if (data.tags !== undefined) updateData.tags = data.tags;
+
     return prisma.category.update({
       where: { id },
-      data: {
-        name: data.name,
-        slug: data.slug?.toLowerCase().replace(/\s+/g, "-"), // do NOT append number
-        image: data.image,
-        parentId: data.parentId,
-      },
+      data: updateData,
     });
   },
 
+  /**
+   * Delete category
+   */
   async remove(id: string) {
     const children = await prisma.category.findMany({ where: { parentId: id } });
     if (children.length > 0) throw new Error("Cannot delete category with subcategories");
@@ -133,13 +138,23 @@ export const CategoryService = {
   },
 
   /**
-   * Assign an attribute to a category
+   * Assign a unified attribute to a category
    * Reuses existing attributes globally if present
    */
   async assignAttribute(
     categoryId: string,
-    attributeData: { id?: string; name?: string; slug?: string; type: string },
-    options: { isRequired?: boolean; isForVariant?: boolean; filterable?: boolean } = {}
+    attributeData: { 
+      id?: string; 
+      name?: string; 
+      slug?: string; 
+      type: string;
+      unit?: string; // ✅ NEW: For specifications like "kg", "inches"
+    },
+    options: { 
+      isRequired?: boolean; 
+      filterable?: boolean; 
+      sortOrder?: number; // ✅ NEW
+    } = {}
   ) {
     // Find or create global attribute
     let attribute;
@@ -155,6 +170,7 @@ export const CategoryService = {
           name: attributeData.name!,
           slug: attributeData.slug!.toLowerCase().replace(/\s+/g, "-"),
           type: attributeData.type as any,
+          unit: attributeData.unit || null, // ✅ NEW
         },
       });
     }
@@ -164,58 +180,67 @@ export const CategoryService = {
       where: { categoryId_attributeId: { categoryId, attributeId: attribute.id } },
       update: {
         isRequired: options.isRequired ?? false,
-        isForVariant: options.isForVariant ?? true,
         filterable: options.filterable ?? true,
+        sortOrder: options.sortOrder ?? 0, // ✅ NEW
       },
       create: {
         categoryId,
         attributeId: attribute.id,
         isRequired: options.isRequired ?? false,
-        isForVariant: options.isForVariant ?? true,
         filterable: options.filterable ?? true,
+        sortOrder: options.sortOrder ?? 0, // ✅ NEW
       },
     });
   },
 
   /**
-   * Assign a specification to a category
-   * Reuses existing specifications globally if present
+   * ❌ REMOVED: assignSpecification method
+   * (Now merged into assignAttribute)
    */
-  async assignSpecification(
-    categoryId: string,
-    specificationData: { id?: string; name?: string; slug?: string; type: string },
-    options: { isRequired?: boolean; filterable?: boolean } = {}
-  ) {
-    // Find or create global specification
-    let specification;
-    if (specificationData.id) {
-      specification = await prisma.specification.findUnique({ where: { id: specificationData.id } });
-    } else if (specificationData.slug) {
-      specification = await prisma.specification.findUnique({ where: { slug: specificationData.slug } });
-    }
 
-    if (!specification) {
-      specification = await prisma.specification.create({
-        data: {
-          name: specificationData.name!,
-          slug: specificationData.slug!.toLowerCase().replace(/\s+/g, "-"),
-          type: specificationData.type as any,
-        },
-      });
-    }
-
-    // Link specification to category (junction table)
-    return prisma.categorySpecification.upsert({
-      where: { categoryId_specificationId: { categoryId, specificationId: specification.id } },
-      update: {
-        isRequired: options.isRequired ?? false,
-        filterable: options.filterable ?? true,
+  /**
+   * ✅ NEW: Search categories by keywords/tags
+   */
+  async search(query: string) {
+    return prisma.category.findMany({
+      where: {
+        OR: [
+          { name: { contains: query, mode: 'insensitive' } },
+          { description: { contains: query, mode: 'insensitive' } },
+          { keywords: { has: query } },
+          { tags: { has: query } },
+        ],
       },
-      create: {
-        categoryId,
-        specificationId: specification.id,
-        isRequired: options.isRequired ?? false,
-        filterable: options.filterable ?? true,
+      include: {
+        parent: true,
+      },
+    });
+  },
+
+  /**
+   * ✅ NEW: Get categories by tag
+   */
+  async getByTag(tag: string) {
+    return prisma.category.findMany({
+      where: {
+        tags: { has: tag },
+      },
+      include: {
+        parent: true,
+      },
+    });
+  },
+
+  /**
+   * ✅ NEW: Get categories by keyword
+   */
+  async getByKeyword(keyword: string) {
+    return prisma.category.findMany({
+      where: {
+        keywords: { has: keyword },
+      },
+      include: {
+        parent: true,
       },
     });
   },

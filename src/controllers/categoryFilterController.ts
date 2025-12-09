@@ -36,7 +36,6 @@ export class CategoryFilterController {
    * @route GET /api/categories/:id/filters
    */
   async getCategoryFilters(req: Request, res: Response): Promise<void> {
-    console.log(req.params)
     try {
       // Validate request
       const errors = validationResult(req);

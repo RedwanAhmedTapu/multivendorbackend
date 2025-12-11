@@ -998,16 +998,209 @@ export class VendorService {
     });
   }
 
-  async requestReVerification(vendorId: string) {
-    return await prisma.vendor.update({
+ /**
+ * Update verification status
+ */
+async updateVerificationStatus(
+  vendorId: string, 
+  status: VerificationStatus
+) {
+  return await prisma.vendor.update({
+    where: { id: vendorId },
+    data: {
+      verificationStatus: status,
+      ...(status === 'UNDER_REVIEW' && { 
+        rejectedAt: null,
+        rejectionReason: null 
+      })
+    },
+    include: {
+      user: {
+        select: {
+          id: true,
+          email: true,
+          phone: true,
+        }
+      },
+      personalInfo: true,
+      documents: true
+    }
+  });
+}
+
+/**
+ * Verify vendor - approve documents and activate account
+ */
+async verifyVendor(vendorId: string, approvedBy?: string) {
+  return await prisma.$transaction(async (tx) => {
+    // Check if all required documents are uploaded and approved
+    const vendor = await tx.vendor.findUnique({
+      where: { id: vendorId },
+      include: {
+        documents: true,
+        onboarding: true,
+        personalInfo: true,
+        bankInfo: true,
+        pickupAddress: true
+      }
+    });
+
+    if (!vendor) {
+      throw new Error('Vendor not found');
+    }
+
+    // Validate onboarding completion
+    if (!vendor.onboarding?.overallComplete) {
+      throw new Error('Vendor must complete all onboarding steps before verification');
+    }
+
+    // Check if required documents exist
+    if (!vendor.documents || vendor.documents.length === 0) {
+      throw new Error('No documents uploaded for verification');
+    }
+
+    // Update all documents to APPROVED
+    await tx.vendorDocument.updateMany({
+      where: { vendorId },
+      data: {
+        verificationStatus: 'APPROVED'
+      }
+    });
+
+    // Update vendor verification status
+    const updatedVendor = await tx.vendor.update({
+      where: { id: vendorId },
+      data: {
+        verificationStatus: VerificationStatus.VERIFIED,
+        verifiedAt: new Date(),
+        status: VendorStatus.ACTIVE, // Automatically activate when verified
+        rejectedAt: null,
+        rejectionReason: null
+      },
+      include: {
+        user: true,
+        personalInfo: true,
+        documents: true,
+        onboarding: true
+      }
+    });
+
+    // TODO: Send verification success email/notification
+
+    return updatedVendor;
+  });
+}
+
+/**
+ * Reject vendor verification with reason
+ */
+async rejectVendorVerification(vendorId: string, rejectionReason: string) {
+  return await prisma.$transaction(async (tx) => {
+    // Update vendor status
+    const vendor = await tx.vendor.update({
+      where: { id: vendorId },
+      data: {
+        verificationStatus: VerificationStatus.REJECTED,
+        rejectedAt: new Date(),
+        rejectionReason,
+        verifiedAt: null
+      },
+      include: {
+        user: true,
+        personalInfo: true,
+        documents: true
+      }
+    });
+
+    // Update document status to REJECTED
+    await tx.vendorDocument.updateMany({
+      where: { vendorId },
+      data: {
+        verificationStatus: 'REJECTED'
+      }
+    });
+
+    // TODO: Send rejection email/notification with reason
+
+    return vendor;
+  });
+}
+
+/**
+ * Suspend vendor verification (e.g., expired documents, fraud suspicion)
+ */
+async suspendVendorVerification(vendorId: string, reason?: string) {
+  return await prisma.vendor.update({
+    where: { id: vendorId },
+    data: {
+      verificationStatus: VerificationStatus.SUSPENDED,
+      rejectionReason: reason || 'Verification suspended by admin',
+      status: VendorStatus.SUSPENDED // Also suspend vendor operations
+    },
+    include: {
+      user: true,
+      personalInfo: true,
+      documents: true
+    }
+  });
+}
+
+/**
+ * Request re-verification after rejection
+ */
+async requestReVerification(vendorId: string) {
+  return await prisma.$transaction(async (tx) => {
+    const vendor = await tx.vendor.findUnique({
+      where: { id: vendorId },
+      include: {
+        onboarding: true,
+        documents: true
+      }
+    });
+
+    if (!vendor) {
+      throw new Error('Vendor not found');
+    }
+
+    // Only rejected or suspended vendors can request re-verification
+    if (!['REJECTED', 'SUSPENDED'].includes(vendor.verificationStatus)) {
+      throw new Error('Only rejected or suspended vendors can request re-verification');
+    }
+
+    // Check if vendor has updated required information
+    if (!vendor.onboarding?.overallComplete) {
+      throw new Error('Please complete all required information before requesting re-verification');
+    }
+
+    // Reset verification status
+    const updatedVendor = await tx.vendor.update({
       where: { id: vendorId },
       data: {
         verificationStatus: VerificationStatus.PENDING,
         rejectedAt: null,
         rejectionReason: null,
+        verifiedAt: null
       },
+      include: {
+        user: true,
+        personalInfo: true,
+        documents: true
+      }
     });
-  }
+
+    // Reset document statuses to PENDING
+    await tx.vendorDocument.updateMany({
+      where: { vendorId },
+      data: {
+        verificationStatus: 'PENDING'
+      }
+    });
+
+    // TODO: Notify admin team about re-verification request
+
+    return updatedVendor;
+  });
+}
 
   // ================================
   // COMMISSION MANAGEMENT (UPDATED)

@@ -41,6 +41,7 @@ router.delete(
 
 // Public routes
 router.get("/active", TermsController.getActive);
+
 router.get("/", TermsController.list);
 
 export default router;

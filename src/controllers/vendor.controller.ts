@@ -273,6 +273,124 @@ private extractKeyFromUrl(url: string): string | null {
       });
     }
   };
+
+  // ================================
+// VERIFICATION STATUS MANAGEMENT
+// ================================
+
+setUnderReview = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const vendor = await this.vendorService.updateVerificationStatus(
+      id, 
+      'UNDER_REVIEW'
+    );
+    
+    res.json({
+      success: true,
+      message: 'Vendor verification status updated to under review',
+      data: vendor
+    });
+  } catch (error: any) {
+    res.status(400).json({
+      success: false,
+      message: 'Failed to update verification status',
+      error: error.message
+    });
+  }
+};
+
+verifyVendor = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { approvedBy } = req.body; // Admin user ID
+    
+    const vendor = await this.vendorService.verifyVendor(id, approvedBy);
+    
+    res.json({
+      success: true,
+      message: 'Vendor verified successfully',
+      data: vendor
+    });
+  } catch (error: any) {
+    res.status(400).json({
+      success: false,
+      message: 'Failed to verify vendor',
+      error: error.message
+    });
+  }
+};
+
+rejectVendorVerification = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { rejectionReason } = req.body;
+    
+    if (!rejectionReason) {
+      return res.status(400).json({
+        success: false,
+        message: 'Rejection reason is required'
+      });
+    }
+    
+    const vendor = await this.vendorService.rejectVendorVerification(
+      id, 
+      rejectionReason
+    );
+    
+    res.json({
+      success: true,
+      message: 'Vendor verification rejected',
+      data: vendor
+    });
+  } catch (error: any) {
+    res.status(400).json({
+      success: false,
+      message: 'Failed to reject vendor verification',
+      error: error.message
+    });
+  }
+};
+
+suspendVendorVerification = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    
+    const vendor = await this.vendorService.suspendVendorVerification(id, reason);
+    
+    res.json({
+      success: true,
+      message: 'Vendor verification suspended',
+      data: vendor
+    });
+  } catch (error: any) {
+    res.status(400).json({
+      success: false,
+      message: 'Failed to suspend vendor verification',
+      error: error.message
+    });
+  }
+};
+
+requestReVerification = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const vendor = await this.vendorService.requestReVerification(id);
+    
+    res.json({
+      success: true,
+      message: 'Re-verification request submitted successfully',
+      data: vendor
+    });
+  } catch (error: any) {
+    res.status(400).json({
+      success: false,
+      message: 'Failed to request re-verification',
+      error: error.message
+    });
+  }
+};
 // ================================
   // PERSONAL INFO MANAGEMENT
   // ================================

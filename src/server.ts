@@ -3,7 +3,7 @@
   return this.toString();
 };
 import 'dotenv/config';
-
+import { initRedis } from "./config/redis.ts";
 import express from "express";
 import cors from "cors";
 import path from "path";
@@ -39,7 +39,8 @@ import bulkproducttemplates from "./routes/bulkproductTemplate.routes.ts";
 import categoryFilterRoutes from './routes/categoryFilterRoutes.ts';
 import faqRoutes from './routes/faq.routes.ts'; 
 import themeRoutes from './routes/theme.routes.ts';
-import categoryTemplate from "./routes/category.template.routes.ts"
+import categoryTemplate from "./routes/category.template.routes.ts";
+import TranslateproductNameToBn from "./routes/translate.routes.ts"
 
 // Fix __dirname in ES Module
 const __filename = fileURLToPath(import.meta.url);
@@ -109,13 +110,14 @@ app.use('/api/category-template', categoryTemplate);
 app.use('/api/categories-filter', categoryFilterRoutes);
 app.use('/api/faqs', faqRoutes);
 app.use('/api/themes', themeRoutes);
+app.use('/api/translate', TranslateproductNameToBn);
 
 
 // ✅ Socket.io handlers
 new ChatSocket(io);
 
 app.get("/", (_req, res) => res.send("E-commerce API running 🚀"));
-
+await initRedis();
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);

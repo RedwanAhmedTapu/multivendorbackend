@@ -36,7 +36,7 @@ router.get("/:id", vendorController.getVendorById);
 // Update vendor profile (Admin/Own vendor)
 router.patch(
   "/:id/profile",
-  categoryimageUpload("vendor", "VENDOR", undefined, 1, "avatar"), // 'avatar' is the field name
+  categoryimageUpload("vendor", "VENDOR", undefined, 1, "avatar"), 
   validate(updateVendorProfileSchema),
   vendorController.updateVendorProfile
 );
@@ -52,6 +52,21 @@ router.patch("/:id/deactivated", vendorController.deactivateVendor);
 
 // Delete vendor (Admin only)
 router.delete("/:id", vendorController.deleteVendor);
+
+// Update verification status to UNDER_REVIEW (Admin only)
+router.patch("/:id/verification/under-review", vendorController.setUnderReview);
+
+// Verify vendor - approve documents (Admin only)
+router.patch("/:id/verification/verify", vendorController.verifyVendor);
+
+// Reject vendor verification (Admin only)
+router.patch("/:id/verification/reject", vendorController.rejectVendorVerification);
+
+// Suspend vendor verification (Admin only)
+router.patch("/:id/verification/suspend", vendorController.suspendVendorVerification);
+
+// Request re-verification (Vendor can request after rejection)
+router.post("/:id/verification/request-reverification", vendorController.requestReVerification);
 
 // ================================
 // COMMISSION MANAGEMENT

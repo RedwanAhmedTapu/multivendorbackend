@@ -6,7 +6,7 @@ export const TermsController = {
   async create(req: Request, res: Response) {
     try {
       const { title, slug, content, version, type, language, metaTitle, metaDesc } = req.body;
-      const userId = req.user?.id; // assuming middleware sets req.user
+      const userId = req.user?.id; 
 
       const terms = await TermsService.create({
         title,
@@ -67,7 +67,6 @@ export const TermsController = {
       const type = req.query.type as TermsType;
       console.log(type)
       const terms = await TermsService.getActive(type);
-      console.log(terms)
       res.json(terms);
     } catch (error: any) {
       res.status(400).json({ error: error.message });

@@ -9,7 +9,6 @@ export interface ColumnConfig {
   width: number;
   type: 'TEXT' | 'NUMBER' | 'BOOLEAN' | 'SELECT';
   isRequired: boolean;
-  isForVariant?: boolean;
   values?: string[];
   validation?: {
     type: string;
@@ -43,7 +42,8 @@ export class TemplateService {
         where: { id: categoryId },
         include: {
           attributes: {
-            where: { isForVariant: true },
+            // REMOVED: where: { isForVariant: true }
+            // This field doesn't exist on CategoryAttribute
             include: {
               attribute: {
                 include: {
@@ -52,18 +52,10 @@ export class TemplateService {
               },
             },
           },
-          specifications: {
-            include: {
-              specification: {
-                include: {
-                  options: true,
-                },
-              },
-            },
-          },
           children: true,
         },
       });
+      
       if (!category) throw new Error(`Category with ID ${categoryId} not found`);
       if (category.children && category.children.length > 0) {
         throw new Error('Selected category is not a leaf category');
@@ -155,7 +147,7 @@ export class TemplateService {
           width: 15, 
           type: 'NUMBER', 
           isRequired: true,
-          description: 'Length of the package'
+          description: 'Length of the package (cm)'
         },
         { 
           header: 'Package Width', 
@@ -163,7 +155,7 @@ export class TemplateService {
           width: 15, 
           type: 'NUMBER', 
           isRequired: true,
-          description: 'Width of the package'
+          description: 'Width of the package (cm)'
         },
         { 
           header: 'Package Height', 
@@ -171,7 +163,7 @@ export class TemplateService {
           width: 15, 
           type: 'NUMBER', 
           isRequired: true,
-          description: 'Height of the package'
+          description: 'Height of the package (cm)'
         },
         {
           header: 'Dangerous Goods',
@@ -205,7 +197,7 @@ export class TemplateService {
           width: 20, 
           type: 'TEXT', 
           isRequired: false,
-          description: 'Type of warranty offered'
+          description: 'Type of warranty offered (e.g., Manufacturer, Seller)'
         },
         { 
           header: 'Warranty Policy', 
@@ -222,20 +214,18 @@ export class TemplateService {
           type: 'TEXT',
           isRequired: false,
           description: 'Comma-separated list of image URLs for the product',
-          validation: { type: 'custom', formula: 'ISURL', error: 'Enter valid URLs separated by commas' },
         },
         {
-          header: 'Video URLs',
-          key: 'videoUrls',
+          header: 'Video URL',
+          key: 'videoUrl',
           width: 50,
           type: 'TEXT',
           isRequired: false,
-          description: 'Comma-separated list of video URLs for the product',
-          validation: { type: 'custom', formula: 'ISURL', error: 'Enter valid URLs separated by commas' },
+          description: 'Video URL for the product',
         },
       ];
 
-      // Add attribute columns with variant toggle
+      // Add attribute columns
       const attributeColumns: ColumnConfig[] = category.attributes.map(attr => ({
         header: attr.attribute.name,
         key: attr.attribute.slug,
@@ -243,23 +233,10 @@ export class TemplateService {
         type: attr.attribute.type,
         values: attr.attribute.type === 'SELECT' ? attr.attribute.values.map(v => v.value) : [],
         isRequired: attr.isRequired,
-        isForVariant: attr.isForVariant,
-        description: `Attribute: ${attr.attribute.name}. ${attr.isForVariant ? 'Used for variant differentiation' : 'Common for all variants'}`
+        description: `${attr.attribute.name}${attr.attribute.unit ? ` (${attr.attribute.unit})` : ''}. ${attr.isRequired ? 'Required' : 'Optional'} field.`
       }));
 
-      // Add specification columns with variant toggle
-      const specificationColumns: ColumnConfig[] = category.specifications.map(spec => ({
-        header: spec.specification.name,
-        key: spec.specification.slug,
-        width: 20,
-        type: spec.specification.type,
-        values: spec.specification.type === 'SELECT' ? spec.specification.options.map(o => o.value) : [],
-        isRequired: spec.isRequired,
-        isForVariant: spec.isForVariant,
-        description: `Specification: ${spec.specification.name}. ${spec.isForVariant ? 'Used for variant differentiation' : 'Common for all variants'}`
-      }));
-
-      const columns = [...fixedColumns, ...attributeColumns, ...specificationColumns];
+      const columns = [...fixedColumns, ...attributeColumns];
       
       // Set worksheet columns
       worksheet.columns = columns.map(col => ({
@@ -270,253 +247,264 @@ export class TemplateService {
 
       // Style header row
       const headerRow = worksheet.getRow(1);
-      headerRow.font = { bold: true };
+      headerRow.font = { bold: true, size: 11 };
       headerRow.fill = {
         type: 'pattern',
         pattern: 'solid',
-        fgColor: { argb: 'FFCCCCCC' },
+        fgColor: { argb: 'FF4472C4' },
       };
-      headerRow.alignment = { vertical: 'middle', horizontal: 'center' };
+      headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      headerRow.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+      headerRow.height = 30;
 
-      // Add data validation and tooltips
+      // Add data validation and notes
       columns.forEach((col, index) => {
         const column = worksheet.getColumn(index + 1);
         
         // Add data validation for all rows after header
         if (col.type === 'SELECT' && col.values && col.values.length > 0) {
-          column.eachCell({ includeEmpty: true }, (cell, rowNumber) => {
-            if (rowNumber > 1) {
-              cell.dataValidation = {
-                type: 'list',
-                allowBlank: !col.isRequired,
-                formulae: [`"${col.values!.join(',')}"`],
-                errorTitle: 'Invalid Input',
-                error: `Please select a value from: ${col.values!.join(', ')}`,
-              };
-            }
-          });
-        } else if (col.type === 'NUMBER') {
-          column.eachCell({ includeEmpty: true }, (cell, rowNumber) => {
-            if (rowNumber > 1) {
-              cell.dataValidation = {
-                type: 'decimal',
-                allowBlank: !col.isRequired,
-                operator: 'greaterThanOrEqual',
-                formulae: [0],
-                errorTitle: 'Invalid Number',
-                error: 'Value must be a positive number',
-              };
-            }
-          });
-        } else if (col.type === 'BOOLEAN') {
-          column.eachCell({ includeEmpty: true }, (cell, rowNumber) => {
-            if (rowNumber > 1) {
-              cell.dataValidation = {
-                type: 'list',
-                allowBlank: !col.isRequired,
-                formulae: ['"true,false"'],
-                errorTitle: 'Invalid Input',
-                error: 'Please select true or false',
-              };
-            }
-          });
-        }
-
-        // Add comments/tooltips for all cells in the column
-        column.eachCell({ includeEmpty: true }, (cell, rowNumber) => {
-          if (rowNumber === 1) {
-            // Header tooltip
-            cell.note = {
-              texts: [{ text: col.description || `Field: ${col.header}\nType: ${col.type}\nRequired: ${col.isRequired ? 'Yes' : 'No'}` }],
-              margins: {
-                insetmode: 'custom',
-                inset: [0.1, 0.1, 0.1, 0.1]
-              }
-            };
-          } else if (col.validation?.type === 'custom' && col.validation.formula === 'ISURL') {
-            // URL validation tooltip
-            cell.note = {
-              texts: [{ text: 'Enter valid URLs separated by commas (e.g., https://example.com/image.jpg)' }],
-              margins: {
-                insetmode: 'custom',
-                inset: [0.1, 0.1, 0.1, 0.1]
-              }
-            };
-          } else if (col.key === 'variantGroupNo') {
-            // Variant group tooltip
-            cell.note = {
-              texts: [{ text: 'Same number = variants of same product\nEmpty = standalone product' }],
-              margins: {
-                insetmode: 'custom',
-                inset: [0.1, 0.1, 0.1, 0.1]
-              }
+          // Apply validation to first 1000 rows
+          for (let rowNum = 2; rowNum <= 1001; rowNum++) {
+            const cell = worksheet.getCell(rowNum, index + 1);
+            cell.dataValidation = {
+              type: 'list',
+              allowBlank: !col.isRequired,
+              formulae: [`"${col.values!.join(',')}"`],
+              showErrorMessage: true,
+              errorStyle: 'error',
+              errorTitle: 'Invalid Input',
+              error: `Please select from: ${col.values!.join(', ')}`,
             };
           }
-        });
+        } else if (col.type === 'NUMBER') {
+          for (let rowNum = 2; rowNum <= 1001; rowNum++) {
+            const cell = worksheet.getCell(rowNum, index + 1);
+            cell.dataValidation = {
+              type: 'decimal',
+              allowBlank: !col.isRequired,
+              operator: 'greaterThanOrEqual',
+              formulae: [0],
+              showErrorMessage: true,
+              errorStyle: 'error',
+              errorTitle: 'Invalid Number',
+              error: 'Value must be 0 or greater',
+            };
+          }
+        } else if (col.type === 'BOOLEAN') {
+          for (let rowNum = 2; rowNum <= 1001; rowNum++) {
+            const cell = worksheet.getCell(rowNum, index + 1);
+            cell.dataValidation = {
+              type: 'list',
+              allowBlank: !col.isRequired,
+              formulae: ['"true,false"'],
+              showErrorMessage: true,
+              errorStyle: 'error',
+              errorTitle: 'Invalid Input',
+              error: 'Please select true or false',
+            };
+          }
+        }
+
+        // Add header note/comment
+        const headerCell = worksheet.getCell(1, index + 1);
+        headerCell.note = {
+          texts: [{
+            text: `${col.description}\n\nType: ${col.type}\nRequired: ${col.isRequired ? 'Yes' : 'No'}${col.values ? `\nOptions: ${col.values.join(', ')}` : ''}`
+          }],
+          margins: {
+            insetmode: 'custom',
+            inset: [0.1, 0.1, 0.1, 0.1]
+          }
+        };
       });
 
-      // Create sample data
+      // Add sample data rows
       const sampleStandaloneRow: { [key: string]: any } = {
         variantGroupNo: '',
-        name: 'Sample Standalone Product',
-        description: 'Sample description for standalone product',
-        sku: 'SAMPLE001',
+        name: 'Example Standalone Product',
+        description: 'This is a standalone product without variants',
+        sku: 'SKU-STANDALONE-001',
         price: 99.99,
-        stock: 10,
-        packageWeight: 1,
+        stock: 50,
+        packageWeight: 1.5,
         packageWeightUnit: 'KG',
         packageLength: 30,
         packageWidth: 20,
-        packageHeight: 5,
+        packageHeight: 10,
         dangerousGoods: 'NONE',
-        warrantyDuration: 1,
-        warrantyUnit: 'YEARS',
-        warrantyType: 'Standard',
-        warrantyPolicy: 'Sample warranty policy',
-        imageUrls: 'https://example.com/image1.jpg,https://example.com/image2.jpg',
-        videoUrls: 'https://example.com/video.mp4',
+        warrantyDuration: 12,
+        warrantyUnit: 'MONTHS',
+        warrantyType: 'Manufacturer',
+        warrantyPolicy: 'Standard manufacturer warranty covering defects',
+        imageUrls: 'https://example.com/product1.jpg,https://example.com/product1-alt.jpg',
+        videoUrl: 'https://example.com/product1-video.mp4',
       };
 
       const sampleVariant1Row: { [key: string]: any } = {
         variantGroupNo: 1,
-        name: 'Sample Product with Variants',
-        description: 'Sample description for product with variants',
-        sku: 'SAMPLE002',
-        price: 89.99,
-        stock: 5,
-        packageWeight: 1,
+        name: 'Example Product with Variants',
+        description: 'This product has multiple color/size variants',
+        sku: 'SKU-VAR1-RED-SMALL',
+        price: 79.99,
+        stock: 25,
+        packageWeight: 1.2,
         packageWeightUnit: 'KG',
-        packageLength: 30,
-        packageWidth: 20,
-        packageHeight: 5,
+        packageLength: 28,
+        packageWidth: 18,
+        packageHeight: 8,
         dangerousGoods: 'NONE',
-        warrantyDuration: 1,
-        warrantyUnit: 'YEARS',
-        warrantyType: 'Standard',
-        warrantyPolicy: 'Sample warranty policy',
-        imageUrls: 'https://example.com/variant1.jpg',
-        videoUrls: '',
+        warrantyDuration: 6,
+        warrantyUnit: 'MONTHS',
+        warrantyType: 'Seller',
+        warrantyPolicy: 'Standard warranty',
+        imageUrls: 'https://example.com/variant-red-small.jpg',
+        videoUrl: '',
       };
 
       const sampleVariant2Row: { [key: string]: any } = {
         variantGroupNo: 1,
-        name: 'Sample Product with Variants',
-        description: 'Sample description for product with variants',
-        sku: 'SAMPLE003',
-        price: 109.99,
-        stock: 8,
-        packageWeight: 1.2,
+        name: 'Example Product with Variants',
+        description: 'This product has multiple color/size variants',
+        sku: 'SKU-VAR1-BLUE-LARGE',
+        price: 89.99,
+        stock: 30,
+        packageWeight: 1.5,
         packageWeightUnit: 'KG',
         packageLength: 32,
         packageWidth: 22,
-        packageHeight: 6,
+        packageHeight: 10,
         dangerousGoods: 'NONE',
-        warrantyDuration: 1,
-        warrantyUnit: 'YEARS',
-        warrantyType: 'Standard',
-        warrantyPolicy: 'Sample warranty policy',
-        imageUrls: 'https://example.com/variant2.jpg',
-        videoUrls: '',
+        warrantyDuration: 6,
+        warrantyUnit: 'MONTHS',
+        warrantyType: 'Seller',
+        warrantyPolicy: 'Standard warranty',
+        imageUrls: 'https://example.com/variant-blue-large.jpg',
+        videoUrl: '',
       };
 
-      // Fill attribute and specification values for sample rows
-      columns.forEach(col => {
+      // Fill attribute values for sample rows
+      attributeColumns.forEach(col => {
         if (col.type === 'SELECT' && col.values && col.values.length > 0) {
           sampleStandaloneRow[col.key] = col.values[0];
           sampleVariant1Row[col.key] = col.values[0];
           sampleVariant2Row[col.key] = col.values.length > 1 ? col.values[1] : col.values[0];
-        } else if (col.type === 'NUMBER' && !sampleStandaloneRow[col.key]) {
-          sampleStandaloneRow[col.key] = 10;
-          sampleVariant1Row[col.key] = 10;
-          sampleVariant2Row[col.key] = 15;
-        } else if (col.type === 'BOOLEAN' && !sampleStandaloneRow[col.key]) {
+        } else if (col.type === 'NUMBER') {
+          sampleStandaloneRow[col.key] = 100;
+          sampleVariant1Row[col.key] = 50;
+          sampleVariant2Row[col.key] = 75;
+        } else if (col.type === 'BOOLEAN') {
           sampleStandaloneRow[col.key] = 'true';
           sampleVariant1Row[col.key] = 'true';
           sampleVariant2Row[col.key] = 'false';
-        } else if (col.type === 'TEXT' && !sampleStandaloneRow[col.key]) {
+        } else if (col.type === 'TEXT') {
           sampleStandaloneRow[col.key] = `Sample ${col.header}`;
-          sampleVariant1Row[col.key] = `Sample ${col.header} 1`;
-          sampleVariant2Row[col.key] = `Sample ${col.header} 2`;
+          sampleVariant1Row[col.key] = `Sample ${col.header} Var1`;
+          sampleVariant2Row[col.key] = `Sample ${col.header} Var2`;
         }
       });
 
-      // Add sample rows
-      worksheet.addRow(sampleStandaloneRow);
-      worksheet.addRow(sampleVariant1Row);
-      worksheet.addRow(sampleVariant2Row);
+      // Add sample rows with styling
+      const row2 = worksheet.addRow(sampleStandaloneRow);
+      const row3 = worksheet.addRow(sampleVariant1Row);
+      const row4 = worksheet.addRow(sampleVariant2Row);
+
+      // Style sample rows
+      [row2, row3, row4].forEach(row => {
+        row.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FFF8F9FA' },
+        };
+        row.font = { color: { argb: 'FF6C757D' }, italic: true };
+      });
 
       // Create instructions sheet
-      const metaSheet = workbook.addWorksheet('Instructions');
-      metaSheet.columns = [
-        { header: 'Field', key: 'field', width: 25 },
+      const instructionsSheet = workbook.addWorksheet('📋 Instructions');
+      instructionsSheet.columns = [
+        { header: 'Field Name', key: 'field', width: 25 },
         { header: 'Description', key: 'description', width: 60 },
-        { header: 'Required', key: 'required', width: 10 },
-        { header: 'Type', key: 'type', width: 15 },
-        { header: 'Variant Specific', key: 'variantSpecific', width: 15 },
-        { header: 'Example', key: 'example', width: 30 },
+        { header: 'Required', key: 'required', width: 12 },
+        { header: 'Data Type', key: 'type', width: 15 },
+        { header: 'Example', key: 'example', width: 35 },
       ];
       
-      const metaHeaderRow = metaSheet.getRow(1);
-      metaHeaderRow.font = { bold: true };
-      metaHeaderRow.fill = { 
+      // Style instructions header
+      const instHeaderRow = instructionsSheet.getRow(1);
+      instHeaderRow.font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
+      instHeaderRow.fill = { 
         type: 'pattern', 
         pattern: 'solid', 
-        fgColor: { argb: 'FFCCCCCC' } 
+        fgColor: { argb: 'FF28A745' } 
       };
+      instHeaderRow.alignment = { vertical: 'middle', horizontal: 'center' };
+      instHeaderRow.height = 25;
 
       // Add field descriptions
       columns.forEach(col => {
-        metaSheet.addRow({
+        const exampleValue = col.values?.[0] || 
+                           (col.type === 'NUMBER' ? (col.key.includes('price') ? '99.99' : '10') : 
+                            col.type === 'BOOLEAN' ? 'true' : 
+                            col.key === 'sku' ? 'SKU-ABC-123' :
+                            col.key === 'variantGroupNo' ? '1 (or leave empty)' :
+                            `Example ${col.header}`);
+        
+        instructionsSheet.addRow({
           field: col.header,
           description: col.description || `Enter the ${col.header.toLowerCase()} for the product`,
-          required: col.isRequired ? 'Yes' : 'No',
+          required: col.isRequired ? '✓ Yes' : '○ No',
           type: col.type,
-          variantSpecific: col.isForVariant ? 'Yes' : 'No',
-          example: col.values?.[0] || 
-                   (col.type === 'NUMBER' ? '10' : 
-                    col.type === 'BOOLEAN' ? 'true' : 
-                    `Sample ${col.header}`),
+          example: exampleValue,
         });
       });
 
-      // Add general instructions
-      metaSheet.addRow([]);
-      metaSheet.addRow([
-        'VARIANT INSTRUCTIONS',
-        'Products with the same Variant Group No are variants of the same product. Leave Variant Group No empty for standalone products.',
+      // Add spacing and important notes
+      instructionsSheet.addRow([]);
+      instructionsSheet.addRow([]);
+      
+      const importantNotesRow = instructionsSheet.addRow([
+        '⚠️ IMPORTANT NOTES',
         '', '', '', ''
       ]);
-      metaSheet.addRow([
-        'ATTRIBUTES & SPECIFICATIONS',
-        'Fields marked as "Variant Specific: Yes" should have different values for each variant in a group.',
-        '', '', '', ''
-      ]);
-      metaSheet.addRow([
-        'REQUIRED FIELDS',
-        'All required fields must be filled. SKU must be unique for each product/variant.',
-        '', '', '', ''
-      ]);
-      metaSheet.addRow([
-        'IMAGES & VIDEOS',
-        'Enter comma-separated URLs. Ensure all URLs are accessible and point to valid media files.',
-        '', '', '', ''
-      ]);
+      importantNotesRow.font = { bold: true, size: 14, color: { argb: 'FFDC3545' } };
+      importantNotesRow.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFFFF3CD' }
+      };
 
-      // Style the instructions sheet
-      metaSheet.eachRow((row, rowNumber) => {
-        if (rowNumber === 1) return; // Skip header
-        
-        if (row.getCell(1).value === 'VARIANT INSTRUCTIONS' || 
-            row.getCell(1).value === 'ATTRIBUTES & SPECIFICATIONS' ||
-            row.getCell(1).value === 'REQUIRED FIELDS' ||
-            row.getCell(1).value === 'IMAGES & VIDEOS') {
-          row.font = { bold: true, color: { argb: 'FF0000FF' } };
-          row.fill = {
-            type: 'pattern',
-            pattern: 'solid',
-            fgColor: { argb: 'FFFFFFCC' }
-          };
-        }
+      const notes = [
+        {
+          title: '1️⃣ Variant Groups',
+          desc: 'Products with the same Variant Group No are variants of the same product (e.g., different sizes/colors). Leave empty for standalone products.'
+        },
+        {
+          title: '2️⃣ SKU Requirements',
+          desc: 'Each SKU must be unique across all products. Format: SKU-[PRODUCT]-[VARIANT] (e.g., SKU-TSHIRT-RED-M)'
+        },
+        {
+          title: '3️⃣ Required Fields',
+          desc: 'All fields marked with "✓ Yes" must be filled. Empty required fields will cause import errors.'
+        },
+        {
+          title: '4️⃣ Image URLs',
+          desc: 'Separate multiple URLs with commas. Ensure URLs are publicly accessible and point to valid images.'
+        },
+        {
+          title: '5️⃣ Data Validation',
+          desc: 'Dropdown fields show available options. Numbers must be positive. Follow the data type for each field.'
+        },
+      ];
+
+      notes.forEach(note => {
+        const noteRow = instructionsSheet.addRow([note.title, note.desc, '', '', '']);
+        noteRow.font = { bold: true };
+        noteRow.getCell(1).fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FFE7F3FF' }
+        };
+        noteRow.alignment = { vertical: 'top', wrapText: true };
+        noteRow.height = 40;
       });
 
       // Ensure templates directory exists
@@ -527,14 +515,17 @@ export class TemplateService {
       }
 
       // Save file
-      const fileName = `${category.name.replace(/\s+/g, '_')}_Product_Template.xlsx`;
+      const fileName = `${category.name.replace(/[^a-zA-Z0-9]/g, '_')}_Product_Template_${Date.now()}.xlsx`;
       const filePath = join(templatesDir, fileName);
       await workbook.xlsx.writeFile(filePath);
 
       // Save template record
       const templateRecord = await prisma.categoryTemplate.upsert({
         where: { categoryId },
-        update: { filePath, updatedAt: new Date() },
+        update: { 
+          filePath, 
+          updatedAt: new Date() 
+        },
         create: { 
           categoryId, 
           filePath, 

@@ -185,7 +185,7 @@ export const ProductService = {
     });
   },
 
-  // ======================
+// ======================
   // Get products by vendor ID
   // ======================
   async getByVendorId(

@@ -1,7 +1,8 @@
 // src/controllers/warehouse.controller.ts
 import type { Request, Response, NextFunction } from 'express';
 import { WarehouseService } from '../services/warehouse.service.ts';
-import { WarehouseType } from '@prisma/client';
+import pkg from '@prisma/client';
+const { WarehouseType } = pkg;
 interface BulkWarehouseInput {
   pickupWarehouse: {
     locationId: string;

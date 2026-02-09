@@ -1,4 +1,7 @@
-import { PrismaClient, Prisma, CourierAuthType, Environment } from '@prisma/client';
+
+import pkg from '@prisma/client';
+const { PrismaClient, Prisma, CourierAuthType, Environment } = pkg;
+
 import type { AxiosInstance } from 'axios';
 import axios from 'axios';
 

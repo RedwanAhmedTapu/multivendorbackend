@@ -1,4 +1,5 @@
-import { AccountClass,AccountGroup,AccountTypeInAccounting ,AccountNature,EntityType, VoucherType  } from '@prisma/client';
+
+import type { AccountClass, AccountGroup, AccountTypeInAccounting, AccountNature, EntityType, VoucherType } from '@prisma/client';
 import  { PrismaClient  } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 

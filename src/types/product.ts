@@ -2,7 +2,7 @@
 // Core Product Types
 // =====================
 
-import { AttributeType } from "@prisma/client";
+import { AttributeType,WarrantyType } from "@prisma/client";
 
 // Image input for products and variants
 export interface ProductImageInput {
@@ -89,7 +89,7 @@ export interface ProductShippingWarrantyInput {
   dangerousGoods: "none" | "contains"; // dangerous goods info
 
   // Warranty info
-  warrantyType: string; // e.g., "manufacturer", "seller", "none"
+  warrantyType: WarrantyType; 
   warrantyPeriodValue: number; // numeric value
   warrantyPeriodUnit: "days" | "months" | "years"; // unit
   warrantyDetails?: string | null; // warranty description
@@ -146,7 +146,7 @@ export interface ProductFilter {
   specifications?: Record<string, string | string[] | number>; // attributeId -> value(s)
 
   // Approval status
-  approvalStatus?: "PENDING" | "ACTIVE" | "REJECTED";
+  approvalStatus?: "PENDING" | "ACTIVE" | "REJECTED" |"DRAFT" | "INACTIVE";
 }
 
 // =====================

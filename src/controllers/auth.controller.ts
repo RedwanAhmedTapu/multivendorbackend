@@ -525,6 +525,7 @@ export const resetPassword = async (req: Request, res: Response) => {
 };
 // ------------------- Refresh Token -------------------
 export const refresh = (req: Request, res: Response) => {
+
   const token = req.cookies.refreshToken;
   if (!token) return res.status(401).json({ message: "Refresh token not found" });
 

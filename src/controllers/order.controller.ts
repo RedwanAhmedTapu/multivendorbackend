@@ -1,10 +1,9 @@
 import type { Request, Response } from 'express';
 import { OrderService } from '../services/order.service.ts';
-import { PaymentService } from '../services/payment.service.ts';
+import { paymentService } from '../services/payment.service.ts';
 import { CourierService } from '../services/courier.service.ts';
 
 const orderService = new OrderService();
-const paymentService = new PaymentService();
 const courierService = new CourierService();
 
 export class OrderController {
@@ -19,17 +18,11 @@ export class OrderController {
         deliveryFee
       );
 
-      // Process delivery fee payment for the first order
-      const firstOrder = orders[0];
-      const paymentResult = await paymentService.processDeliveryFeePayment(
-        firstOrder.id,
-        deliveryFee
-      );
+     
 
       res.json({
         success: true,
         orders,
-        payment: paymentResult
       });
     } catch (error) {
       res.status(500).json({

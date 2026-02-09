@@ -10,13 +10,16 @@ export class FaqController {
     try {
       const query = {
         category: req.query.category as string,
-        isActive: req.query.isActive as any,
+        isActive: req.query.isActive === 'true' ? true : req.query.isActive === 'false' ? false : undefined,
         search: req.query.search as string,
         page: parseInt(req.query.page as string) || 1,
         limit: parseInt(req.query.limit as string) || 10
       };
 
       const result = await faqService.getAllFaqs(query);
+      console.log(query,"q")
+
+      console.log(result,"r")
 
       return res.status(200).json({
         success: true,

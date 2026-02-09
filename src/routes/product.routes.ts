@@ -1,15 +1,25 @@
+// routes/product.routes.ts
 import { Router } from "express";
-import { ProductController } from "../controllers/product.controller.ts";
+import { 
+  PublicProductController,
+  VendorProductController,
+  AdminProductController 
+} from "../controllers/product.controller.ts";
 import { imageUpload } from "../middlewares/upload.middleware.ts";
 import { authenticateUser, authorizeRoles } from "../middlewares/auth.middleware.ts";
 
 const router = Router();
 
-// ----------------------
-// Product Image Upload (Vendor only)
-// ----------------------
+// =====================================================
+// IMAGE UPLOAD ROUTES
+// =====================================================
+
+/**
+ * Upload product images (Vendor only)
+ * POST /api/products/upload
+ */
 router.post(
-  "/upload/product",
+  "/upload",
   authenticateUser,
   authorizeRoles("VENDOR"),
   (req, res, next) => {
@@ -49,98 +59,294 @@ router.post(
   }
 );
 
-// ----------------------
-// Public Routes
-// ----------------------
+// =====================================================
+// PUBLIC ROUTES (No Authentication Required)
+// =====================================================
 
-// Get all products (public)
-router.get("/", ProductController.getAll);
+/**
+ * Search products
+ * GET /api/products/search?q=...&limit=20
+ */
+router.get("/search", PublicProductController.search);
 
-// Search products (public)
-router.get("/search", ProductController.search);
+/**
+ * Get featured products
+ * GET /api/products/featured?limit=10
+ */
+router.get("/featured", PublicProductController.getFeatured);
 
-// Filter products (public)
-router.post("/filter", ProductController.filter);
+/**
+ * Filter products
+ * POST /api/products/filter
+ */
+router.post("/filter", PublicProductController.filter);
 
-// Get product by ID (public)
-router.get("/:id", ProductController.getById);
+/**
+ * Get products by category
+ * GET /api/products/category/:categoryId
+ */
+router.get("/category/:categoryId", PublicProductController.getByCategoryId);
 
-// ----------------------
-// Vendor-Specific Routes
-// ----------------------
+/**
+ * Get all active products
+ * GET /api/products
+ */
+router.get("/", PublicProductController.getAll);
 
-// Get products by vendor ID
+/**
+ * Get product by ID (public view)
+ * GET /api/products/:id
+ */
+router.get("/:id", PublicProductController.getById);
+
+// =====================================================
+// VENDOR ROUTES (Vendor Authentication Required)
+// =====================================================
+
+/**
+ * Get vendor's own products
+ * GET /api/products/vendor/my-products?status=ACTIVE
+ */
 router.get(
-  "/vendor/:vendorId",
-  ProductController.getByVendorId
-);
-
-// Get vendor product statistics
-router.get(
-  "/vendor/:vendorId/statistics",
-  authenticateUser,
-  authorizeRoles("VENDOR", "ADMIN"),
-  ProductController.getStatistics
-);
-
-// ----------------------
-// Product CRUD (Protected)
-// ----------------------
-
-// Create product (Vendor only)
-router.post(
-  "/",
+  "/vendor/my-products",
   authenticateUser,
   authorizeRoles("VENDOR"),
-  (req, res, next) => {
-    const vendorId = req.user?.vendorId?.toString();
-    if (!vendorId) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Vendor ID not found" 
-      });
-    }
-    return imageUpload("product", "VENDOR", vendorId)(req, res, next);
-  },
-  ProductController.create
+  VendorProductController.getMyProducts
 );
 
-// Update product (Vendor & Admin)
-router.put(
-  "/:id",
+/**
+ * Get vendor's product statistics
+ * GET /api/products/vendor/statistics
+ */
+router.get(
+  "/vendor/statistics",
   authenticateUser,
-  authorizeRoles("VENDOR", "ADMIN"),
-  (req, res, next) => {
-    const vendorId = req.user?.vendorId?.toString();
-    if (req.user?.role === "VENDOR" && !vendorId) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Vendor ID not found" 
-      });
-    }
-    // Only apply image upload middleware if vendorId exists (for vendors)
-    if (vendorId) {
-      return imageUpload("product", "VENDOR", vendorId)(req, res, next);
-    }
-    next();
-  },
-  ProductController.update
+  authorizeRoles("VENDOR"),
+  VendorProductController.getStatistics
+);
+/**
+ * Get vendor's product statistics
+ * GET /api/products/vendor/statistics
+ */
+router.get(
+  "/vendor/product-contents-score",
+  authenticateUser,
+  authorizeRoles("VENDOR"),
+  VendorProductController.getContentScoreOfVendorProduct
 );
 
-// Update product status - Approve/Reject (Admin & Employee only)
+/**
+ * Get vendor's specific product (ownership verified)
+ * GET /api/products/vendor/:id
+ */
+router.get(
+  "/vendor/:id",
+  authenticateUser,
+  authorizeRoles("VENDOR"),
+  VendorProductController.getById
+);
+
+/**
+ * Create new product (Vendor only)
+ * POST /api/products/vendor
+ */
+router.post(
+  "/vendor",
+  authenticateUser,
+  authorizeRoles("VENDOR"),
+  VendorProductController.create
+);
+
+/**
+ * Update vendor's product
+ * PUT /api/products/vendor/:id
+ */
+router.put(
+  "/vendor/:id",
+  authenticateUser,
+  authorizeRoles("VENDOR"),
+  VendorProductController.update
+);
+
+/**
+ * Delete vendor's product
+ * DELETE /api/products/vendor/:id
+ */
+router.delete(
+  "/vendor/:id",
+  authenticateUser,
+  authorizeRoles("VENDOR"),
+  VendorProductController.remove
+);
+
+/**
+ * Update product variant stock
+ * PATCH /api/products/vendor/:id/variants/:variantId/stock
+ */
 router.patch(
-  "/:id/status",
+  "/vendor/:id/variants/:variantId/stock",
+  authenticateUser,
+  authorizeRoles("VENDOR"),
+  VendorProductController.updateStock
+);
+router.patch(
+  "/vendor/:id/variants/:variantId/price",
+  authenticateUser,
+  authorizeRoles("VENDOR"),
+  VendorProductController.updatePrice
+);
+
+router.patch(
+  "/vendor/:id/variants/:variantId/special-price",
+  authenticateUser,
+  authorizeRoles("VENDOR"),
+  VendorProductController.updateSpecialPrice
+);
+// =====================================================
+// ADMIN ROUTES (Admin/Employee Authentication Required)
+// =====================================================
+
+/**
+ * Get all products (admin view - all statuses)
+ * GET /api/products/admin/all
+ */
+router.get(
+  "/admin/all",
   authenticateUser,
   authorizeRoles("ADMIN", "EMPLOYEE"),
-  ProductController.updateStatus
+  AdminProductController.getAll
 );
 
-// Delete product (Vendor & Admin)
-router.delete(
-  "/:id",
+/**
+ * Get products pending approval
+ * GET /api/products/admin/pending
+ */
+router.get(
+  "/admin/pending",
   authenticateUser,
-  authorizeRoles("VENDOR", "ADMIN"),
-  ProductController.remove
+  authorizeRoles("ADMIN", "EMPLOYEE"),
+  AdminProductController.getPendingApproval
+);
+
+/**
+ * Get admin statistics
+ * GET /api/products/admin/statistics?vendorId=...
+ */
+router.get(
+  "/admin/statistics",
+  authenticateUser,
+  authorizeRoles("ADMIN", "EMPLOYEE"),
+  AdminProductController.getStatistics
+);
+
+/**
+ * Filter products (admin view)
+ * POST /api/products/admin/filter
+ */
+router.post(
+  "/admin/filter",
+  authenticateUser,
+  authorizeRoles("ADMIN", "EMPLOYEE"),
+  AdminProductController.filter
+);
+
+/**
+ * Get products by vendor ID (admin view)
+ * GET /api/products/admin/vendor/:vendorId?status=PENDING
+ */
+router.get(
+  "/admin/vendor/:vendorId",
+  authenticateUser,
+  authorizeRoles("ADMIN", "EMPLOYEE"),
+  AdminProductController.getByVendorId
+);
+
+/**
+ * Approve product
+ * PATCH /api/products/admin/:id/approve
+ */
+router.patch(
+  "/admin/:id/approve",
+  authenticateUser,
+  authorizeRoles("ADMIN", "EMPLOYEE"),
+  AdminProductController.approveProduct
+);
+
+/**
+ * Reject product
+ * PATCH /api/products/admin/:id/reject
+ */
+router.patch(
+  "/admin/:id/reject",
+  authenticateUser,
+  authorizeRoles("ADMIN", "EMPLOYEE"),
+  AdminProductController.rejectProduct
+);
+
+/**
+ * Bulk approve products
+ * POST /api/products/admin/bulk-approve
+ */
+router.post(
+  "/admin/bulk-approve",
+  authenticateUser,
+  authorizeRoles("ADMIN", "EMPLOYEE"),
+  AdminProductController.bulkApprove
+);
+
+/**
+ * Bulk reject products
+ * POST /api/products/admin/bulk-reject
+ */
+router.post(
+  "/admin/bulk-reject",
+  authenticateUser,
+  authorizeRoles("ADMIN", "EMPLOYEE"),
+  AdminProductController.bulkReject
+);
+
+/**
+ * Update product status (admin)
+ * PATCH /api/products/admin/:id/status
+ */
+router.patch(
+  "/admin/:id/status",
+  authenticateUser,
+  authorizeRoles("ADMIN", "EMPLOYEE"),
+  AdminProductController.updateStatus
+);
+
+/**
+ * Get product by ID (admin view)
+ * GET /api/products/admin/:id
+ */
+router.get(
+  "/admin/:id",
+  authenticateUser,
+  authorizeRoles("ADMIN", "EMPLOYEE"),
+  AdminProductController.getById
+);
+
+/**
+ * Update product (admin override)
+ * PUT /api/products/admin/:id
+ */
+router.put(
+  "/admin/:id",
+  authenticateUser,
+  authorizeRoles("ADMIN", "EMPLOYEE"),
+  AdminProductController.update
+);
+
+/**
+ * Delete product (admin force delete)
+ * DELETE /api/products/admin/:id
+ */
+router.delete(
+  "/admin/:id",
+  authenticateUser,
+  authorizeRoles("ADMIN", "EMPLOYEE"),
+  AdminProductController.remove
 );
 
 export default router;

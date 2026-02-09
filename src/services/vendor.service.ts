@@ -45,6 +45,7 @@ export class VendorService {
   // ================================
   // VENDOR CRUD OPERATIONS
   // ================================
+ 
 
   async createVendor(data: CreateVendorRequest) {
     const hashedPassword = await bcrypt.hash(data.password, 10);
@@ -197,7 +198,7 @@ export class VendorService {
     const {
       status,
       verificationStatus,
-      accountType, // CHANGED: from sellerType to accountType
+      accountType, 
       search,
       commissionMin,
       commissionMax,

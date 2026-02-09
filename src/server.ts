@@ -8,9 +8,9 @@ import express from "express";
 import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
-import rateLimit from "express-rate-limit";
 import { createServer } from "http";
 import { Server } from "socket.io";
+import cookieParser from "cookie-parser";
 
 // Import routes
 import authRoutes from "./routes/auth.routes.ts";
@@ -28,7 +28,7 @@ import chatRoutes from "./routes/chat.routes.ts";
 import shippingApi from "./routes/shippingProvider.routes.ts";
 import TermsRoutes from "./routes/terms.routes.ts";
 import { ChatSocket } from "./socket/chatSocket.ts";
-import courierRoutes from "./routes/corierRoutes.ts";
+import courierRoutes from "./routes/courier.routes.ts";
 import vendorstorage from "./routes/vendor-storage.routes.ts";
 import filemanger from "./routes/vendor.folder.routes.ts";
 import offerRoutes from "./routes/offers.routes.ts";
@@ -40,7 +40,13 @@ import categoryFilterRoutes from './routes/categoryFilterRoutes.ts';
 import faqRoutes from './routes/faq.routes.ts'; 
 import themeRoutes from './routes/theme.routes.ts';
 import categoryTemplate from "./routes/category.template.routes.ts";
-import TranslateproductNameToBn from "./routes/translate.routes.ts"
+import TranslateproductNameToBn from "./routes/translate.routes.ts";
+import LocationsRoutes from "./routes/location.routes.ts";
+import VendorwarehoueRoutes from "./routes/warehouse.routes.ts";
+import CartWishitems from "./routes/cartWish.routes.ts";
+import accountingRoutes from './routes/accounting.routes.ts';
+import UserAddressRoutes  from './routes/user-address.routes.ts';
+import footerSettingsRoutes from "./routes/footerSettings.routes.ts";
 
 // Fix __dirname in ES Module
 const __filename = fileURLToPath(import.meta.url);
@@ -51,9 +57,12 @@ const server = createServer(app);
 
 const allowedOrigin =  "https://finixmart.com.bd" ;
 
-// ✅ INCREASE PAYLOAD SIZE LIMIT - Add this before CORS
-app.use(express.json({ limit: '50mb' })); // Increase from default 100kb to 50MB
+// ✅ INCREASE PAYLOAD SIZE LIMIT
+app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// ✅ CRITICAL: Add cookie parser middleware
+app.use(cookieParser());
 
 // Express CORS
 app.use(
@@ -108,9 +117,16 @@ app.use('/api/bulkproduct-templates', bulkproducttemplates);
 app.use('/api/category-template', categoryTemplate);
 
 app.use('/api/categories-filter', categoryFilterRoutes);
+app.use("/api/cart-wish",CartWishitems);
 app.use('/api/faqs', faqRoutes);
 app.use('/api/themes', themeRoutes);
+app.use('/api/locations',LocationsRoutes)
+app.use('/api/warehouse',VendorwarehoueRoutes);
+app.use('/api/user-address', UserAddressRoutes);
 app.use('/api/translate', TranslateproductNameToBn);
+
+app.use('/api/accounting',accountingRoutes);
+app.use("/api/footer-settings", footerSettingsRoutes);
 
 
 // ✅ Socket.io handlers

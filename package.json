@@ -22,6 +22,7 @@
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "crypto": "^1.0.1",
+    "decimal.js": "^10.6.0",
     "dotenv": "^17.2.1",
     "exceljs": "^4.4.0",
     "express": "^5.1.0",
@@ -30,6 +31,8 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
     "nodemailer": "^7.0.6",
+    "papaparse": "^5.5.3",
+    "puppeteer": "^24.34.0",
     "redis": "^5.8.2",
     "socket.io": "^4.8.1",
     "xlsx": "^0.18.5",
@@ -46,10 +49,13 @@
     "@types/multer": "^2.0.0",
     "@types/node": "^24.3.1",
     "@types/nodemailer": "^7.0.1",
+    "@types/papaparse": "^5.5.2",
+    "@types/uuid": "^10.0.0",
     "@types/xlsx": "^0.0.35",
     "nodemon": "^3.1.10",
     "prisma": "^6.16.1",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.2"
-  }
+  },
+  "description": "��#\u0000 \u0000m\u0000u\u0000l\u0000t\u0000i\u0000v\u0000e\u0000n\u0000d\u0000o\u0000r\u0000b\u0000a\u0000c\u0000k\u0000e\u0000n\u0000d\u0000\r\u0000 \u0000"
 }

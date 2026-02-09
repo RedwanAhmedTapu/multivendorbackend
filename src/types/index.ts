@@ -44,47 +44,67 @@ export interface PayoutRequest {
   method: string;
 }
 
+// types/index.ts
 export interface SSLCommerzInitResponse {
   status: string;
   failedreason?: string;
-  sessionkey?: string;
-  gw?: {
-    visa?: string;
-    master?: string;
-    amex?: string;
-    othercards?: string;
-    internetbanking?: string;
-    mobilebanking?: string;
+  sessionkey: string;
+  gw: {
+    visa: string;
+    master: string;
+    amex: string;
+    othercards: string;
+    internetbanking: string;
+    mobilebanking: string;
   };
-  redirectGatewayURL?: string;
+  redirectGatewayURL: string;
+  directPaymentURLBank: string;
+  directPaymentURLCard: string;
+  directPaymentURL: string;
+  redirectGatewayURLFailed: string;
+  GatewayPageURL: string;
+  storeBanner: string;
+  storeLogo: string;
+  desc: Array<{
+    name: string;
+    type: string;
+    logo: string;
+    gw: string;
+    r_flag: string;
+    redirectGatewayURL: string;
+  }>;
+  is_direct_pay_enable: string;
 }
 
 export interface SSLCommerzValidationResponse {
-  status: string;
+  status:
+    | "VALID"
+    | "VALIDATED"
+    | "FAILED"
+    | "CANCELLED"
+    | "INVALID_TRANSACTION";
   tran_date: string;
   tran_id: string;
   val_id: string;
   amount: string;
   store_amount: string;
-  currency: string;
-  bank_tran_id: string;
   card_type: string;
   card_no: string;
+  currency: string;
+  bank_tran_id: string;
   card_issuer: string;
   card_brand: string;
   card_issuer_country: string;
   card_issuer_country_code: string;
   currency_type: string;
   currency_amount: string;
-  currency_rate: string;
-  base_fair: string;
-  value_a: string;
-  value_b: string;
-  value_c: string;
-  value_d: string;
-  risk_title: string;
+  value_a?: string;
+  value_b?: string;
+  value_c?: string;
+  value_d?: string;
   risk_level: string;
-  APIConnect: string;
-  validated_on: string;
-  gw_version: string;
+  risk_title: string;
+  APIConnect?: string;
+  validated_on?: string;
+  gw_version?: string;
 }

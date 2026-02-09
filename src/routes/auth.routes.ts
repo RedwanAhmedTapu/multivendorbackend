@@ -22,7 +22,7 @@ router.post("/verify-otp", (req: Request, res: Response) => verifyOtp(req, res))
 
 // Auth flows
 router.post("/login", (req: Request, res: Response) => login(req, res));
-router.get("/refresh", (req: Request, res: Response) => refresh(req, res));
+router.post("/refresh", (req: Request, res: Response) => refresh(req, res));
 router.post("/logout", (req: Request, res: Response) => logout(req, res));
 
 // Social signup/login

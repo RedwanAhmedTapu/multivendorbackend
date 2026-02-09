@@ -1,0 +1,698 @@
+[
+  {
+    "id": "R3921298",
+    "name": "Barishal",
+    "parentId": "R184640",
+    "level": "L2"
+  },
+  {
+    "id": "R3824588",
+    "name": "Chattogram",
+    "parentId": "R184640",
+    "level": "L2"
+  },
+  {
+    "id": "R3921322",
+    "name": "Dhaka",
+    "parentId": "R184640",
+    "level": "L2"
+  },
+  {
+    "id": "R3825003",
+    "name": "Khulna",
+    "parentId": "R184640",
+    "level": "L2"
+  },
+  {
+    "id": "R7318343",
+    "name": "Mymensingh",
+    "parentId": "R184640",
+    "level": "L2"
+  },
+  {
+    "id": "R3859335",
+    "name": "Rajshahi",
+    "parentId": "R184640",
+    "level": "L2"
+  },
+  {
+    "id": "R3921211",
+    "name": "Rangpur",
+    "parentId": "R184640",
+    "level": "L2"
+  },
+  {
+    "id": "R3921222",
+    "name": "Sylhet",
+    "parentId": "R184640",
+    "level": "L2"
+  },
+  {
+    "id": "R80300576",
+    "name": "Dhaka - North",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300574",
+    "name": "Dhaka - South",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300575",
+    "name": "Faridpur",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300579",
+    "name": "Gazipur",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300558",
+    "name": "Gopalganj",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R4734867",
+    "name": "Keraniganj - Dhaka",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300573",
+    "name": "Kishoreganj",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300566",
+    "name": "Madaripur",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300564",
+    "name": "Manikganj - Shibloya",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300582",
+    "name": "Manikganj - Singair",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300584",
+    "name": "Manikganj - Town",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300572",
+    "name": "Munshiganj - Gajaria",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300583",
+    "name": "Munshiganj - Lohajong",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300585",
+    "name": "Munshiganj - Sirajdikhan",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300557",
+    "name": "Munshiganj - Town",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300559",
+    "name": "Narayanganj",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300553",
+    "name": "Narsingdi",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300561",
+    "name": "Nawabganj",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300560",
+    "name": "Rajbari - Baliakandi",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300562",
+    "name": "Rajbari - Pangsha",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300571",
+    "name": "Rajbari - Town",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R4730836",
+    "name": "Savar",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300578",
+    "name": "Shariatpur - Naria",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300580",
+    "name": "Shariatpur - Town",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300567",
+    "name": "Tangail - Basail",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300581",
+    "name": "Tangail - Bhuapur",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300563",
+    "name": "Tangail - Deldur",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "RBD1478",
+    "name": "Tangail - Dhanbari",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300568",
+    "name": "Tangail - Ghatail",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300577",
+    "name": "Tangail - Gopalpur",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300569",
+    "name": "Tangail - Kalihati",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300556",
+    "name": "Tangail - Madhupur",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300565",
+    "name": "Tangail - Mirzapur",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300586",
+    "name": "Tangail - Nagarpur",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300554",
+    "name": "Tangail - Sakhipur",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80300555",
+    "name": "Tangail - Town",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80314542",
+    "name": "Tongi",
+    "parentId": "R3921322",
+    "level": "L3"
+  },
+  {
+    "id": "R80301288",
+    "name": "Alfadanga",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315191",
+    "name": "Alipur",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80301284",
+    "name": "Ambikapur",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315189",
+    "name": "Ambikapur Board Office",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD899",
+    "name": "Atrashi Sadarpur",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD993",
+    "name": "Bagat Bazar",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315173",
+    "name": "Baitul Aman Housing Society",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80301285",
+    "name": "Baitulaman Politecni",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315184",
+    "name": "Bakhunda",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80301289",
+    "name": "Bhanga",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD1031",
+    "name": "Bhashanchar",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD1039",
+    "name": "Bil Mamudpur",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80301283",
+    "name": "Boalmari",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315200",
+    "name": "Bodorpur",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315179",
+    "name": "C&B Ghat",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD1122",
+    "name": "Charbhadrasan Upazila Faridpur",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD1108",
+    "name": "Char Hazigonj Bazar",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315193",
+    "name": "Chorkomlapur",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315188",
+    "name": "Chunaghata",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315177",
+    "name": "Dhuldi Bazar",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315178",
+    "name": "Dhuldi Railgate",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD1237",
+    "name": "Durgapur Faridpur",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315182",
+    "name": "Engineering College",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315175",
+    "name": "Faridpur New Bus Stand",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD957",
+    "name": "Faridpur New Market",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80301286",
+    "name": "Faridpur Sadar",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD1192",
+    "name": "Gojaria Bazar",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD1231",
+    "name": "Goldangi Faridpur",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD916",
+    "name": "Hat Krishnapur",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315181",
+    "name": "Horishova",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD839",
+    "name": "Hotath Bazar",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD777",
+    "name": "Ishan Gopalpur",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315171",
+    "name": "Jhiltuli",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD875",
+    "name": "Kamarkhali",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80301287",
+    "name": "Kanaipur",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD1206",
+    "name": "Kanaipur Bazar",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD890",
+    "name": "Kanaipur Tetul Tala",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315192",
+    "name": "Khabaspur",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD847",
+    "name": "Khaleque Bazar",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD921",
+    "name": "Khalilpur Bazar",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD932",
+    "name": "Khusir Bazar Faridpur",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315185",
+    "name": "Kobirpur",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315194",
+    "name": "Komlapur",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315176",
+    "name": "Komorpur",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315186",
+    "name": "Krishi College",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315195",
+    "name": "Laler Mor",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD901",
+    "name": "Maligram Bhanga",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD950",
+    "name": "Mamudpur",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315187",
+    "name": "Medical",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD1114",
+    "name": "Modhukhali Upozila Faridpur",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD842",
+    "name": "Mohammadpur Bazar",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315190",
+    "name": "Mohila Road",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD1036",
+    "name": "Momin Khar Hat",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315183",
+    "name": "Munshibazar",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD1210",
+    "name": "Nagarkanda Upazila Faridpur",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315172",
+    "name": "Niltuli",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315174",
+    "name": "Old Bus Stand",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315196",
+    "name": "Onather Mor",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD783",
+    "name": "Peyarpur Bazar",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD907",
+    "name": "Pirerchor Bhanga",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD1135",
+    "name": "Poranpur Bazar Faridpur",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315199",
+    "name": "Puran Gazi Bari",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD1117",
+    "name": "Sadarpur Upazila Faridpur",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD1063",
+    "name": "Sadipur Bazar",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD1183",
+    "name": "Saltha Upazila Faridpur",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315198",
+    "name": "Sovarampur",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315197",
+    "name": "Station Bazar",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD771",
+    "name": "Talma Bazar",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "R80315180",
+    "name": "Tepakhola",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD1194",
+    "name": "Vai Vai Bazar",
+    "parentId": "R80300575",
+    "level": "L4"
+  },
+  {
+    "id": "RBD886",
+    "name": "West Khabaspur Faridpur",
+    "parentId": "R80300575",
+    "level": "L4"
+  }
+]

@@ -14,7 +14,7 @@ import {
   addFooterElement,
   updateFooterElement,
   deleteFooterElement,
-} from "../controllers/footerSettings.controller";
+} from "../controllers/footerSettings.controller.ts";
 
 const router = Router();
 

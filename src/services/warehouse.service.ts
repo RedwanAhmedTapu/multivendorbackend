@@ -1,5 +1,7 @@
 // src/services/warehouse.service.ts
-import { PrismaClient, WarehouseType, Prisma } from '@prisma/client';
+import pkg, { type Prisma } from '@prisma/client';
+const { PrismaClient, WarehouseType } = pkg;
+
 
 const prisma = new PrismaClient();
 
@@ -12,7 +14,7 @@ interface CreateWarehouseInput {
   email?: string;
   phone?: string;
   isDefault?: boolean;
-  type?: WarehouseType;
+  type?: typeof WarehouseType[keyof typeof WarehouseType];
 }
 
 interface UpdateWarehouseInput {
@@ -23,7 +25,7 @@ interface UpdateWarehouseInput {
   email?: string;
   phone?: string;
   isDefault?: boolean;
-  type?: WarehouseType;
+  type?: typeof WarehouseType[keyof typeof WarehouseType];
 }
 
 interface CreateHolidayInput {
@@ -310,7 +312,7 @@ export class WarehouseService {
   async getWarehousesByVendor(
     vendorId: string,
     filters: {
-      type?: WarehouseType;
+      type?: typeof WarehouseType[keyof typeof WarehouseType];
       isDefault?: boolean;
       locationId?: string;
     } = {}

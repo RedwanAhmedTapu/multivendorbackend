@@ -2624,10 +2624,8 @@ model FooterColumn {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  title       String
-  slug        String // e.g., "get-to-know-us", "customer-service", "legal"
-  displayOrder Int    @default(0) // To control the order of columns
-  isVisible   Boolean @default(true)
+  title     String
+  isVisible Boolean @default(true)
 
   footerSettingsId String
   footerSettings   FooterSettings @relation(fields: [footerSettingsId], references: [id], onDelete: Cascade)
@@ -2645,7 +2643,7 @@ model FooterElement {
 
   label        String
   url          String
-  displayOrder Int     @default(0) // To control the order of elements
+  displayOrder Int     @default(0)
   isVisible    Boolean @default(true)
   openInNewTab Boolean @default(false)
 

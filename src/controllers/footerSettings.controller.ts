@@ -12,7 +12,6 @@ export const getFooterSettings = async (req: Request, res: Response) => {
       include: {
         columns: {
           where: { isVisible: true },
-          orderBy: { displayOrder: "asc" },
           include: {
             elements: {
               where: { isVisible: true },
@@ -52,7 +51,6 @@ export const getFooterSettingsById = async (req: Request, res: Response) => {
       where: { id },
       include: {
         columns: {
-          orderBy: { displayOrder: "asc" },
           include: {
             elements: {
               orderBy: { displayOrder: "asc" },
@@ -107,8 +105,6 @@ export const createFooterSettings = async (req: Request, res: Response) => {
           ? {
               create: columns.map((column: any) => ({
                 title: column.title,
-                slug: column.slug,
-                displayOrder: column.displayOrder || 0,
                 isVisible: column.isVisible !== undefined ? column.isVisible : true,
                 elements: column.elements
                   ? {
@@ -291,7 +287,6 @@ export const addFooterColumn = async (req: Request, res: Response) => {
       data: {
         ...columnData,
         footerSettingsId,
-        displayOrder: columnData.displayOrder || 0,
         isVisible: columnData.isVisible !== undefined ? columnData.isVisible : true,
         elements: elements
           ? {

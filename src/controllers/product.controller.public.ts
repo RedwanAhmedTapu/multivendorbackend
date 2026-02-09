@@ -12,21 +12,27 @@ export const PublicProductController = {
   // Get all products
   // ======================
   async getAll(req: Request, res: Response) {
-    try {
-      const products = await PublicProductService.getAll();
-      return res.json({ 
-        success: true, 
-        data: products,
-        count: products.length 
-      });
-    } catch (error: any) {
-      console.error("Error fetching all products:", error);
-      return res.status(500).json({ 
-        success: false, 
-        message: error.message || "Failed to fetch products" 
-      });
-    }
-  },
+  try {
+    // Get pagination parameters from query
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 12;
+    
+    const result = await PublicProductService.getAll({ page, limit });
+    
+    return res.json({ 
+      success: true, 
+      data: result.products,
+      pagination: result.pagination,
+      count: result.products.length 
+    });
+  } catch (error: any) {
+    console.error("Error fetching all products:", error);
+    return res.status(500).json({ 
+      success: false, 
+      message: error.message || "Failed to fetch products" 
+    });
+  }
+},
 
   // ======================
   // Get product by ID
@@ -108,48 +114,56 @@ export const PublicProductController = {
   // ======================
   // Filter products
   // ======================
-  async filter(req: Request, res: Response) {
-    try {
-      const filters = req.body;
+ async filter(req: Request, res: Response) {
+  try {
+    const filters = req.body;
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 12;
 
-      // Validate filter parameters
-      if (filters.minPrice !== undefined && filters.minPrice < 0) {
-        return res.status(400).json({
-          success: false,
-          message: "minPrice must be a positive number"
-        });
-      }
-
-      if (filters.maxPrice !== undefined && filters.maxPrice < 0) {
-        return res.status(400).json({
-          success: false,
-          message: "maxPrice must be a positive number"
-        });
-      }
-
-      if (filters.minPrice && filters.maxPrice && filters.minPrice > filters.maxPrice) {
-        return res.status(400).json({
-          success: false,
-          message: "minPrice cannot be greater than maxPrice"
-        });
-      }
-
-      const products = await PublicProductService.filterProducts(filters);
-      
-      return res.json({ 
-        success: true, 
-        data: products,
-        count: products.length,
-        filters: filters 
-      });
-    } catch (error: any) {
-      console.error("Error filtering products:", error);
-      return res.status(400).json({ 
-        success: false, 
-        message: error.message || "Failed to filter products" 
+    // Validate filter parameters
+    if (filters.minPrice !== undefined && filters.minPrice < 0) {
+      return res.status(400).json({
+        success: false,
+        message: "minPrice must be a positive number"
       });
     }
-  },
+
+    if (filters.maxPrice !== undefined && filters.maxPrice < 0) {
+      return res.status(400).json({
+        success: false,
+        message: "maxPrice must be a positive number"
+      });
+    }
+
+    if (filters.minPrice && filters.maxPrice && filters.minPrice > filters.maxPrice) {
+      return res.status(400).json({
+        success: false,
+        message: "minPrice cannot be greater than maxPrice"
+      });
+    }
+
+    const result = await PublicProductService.filterProducts(filters, page, limit);
+    
+    return res.json({ 
+      success: true, 
+      data: result.products,
+      pagination: {
+        page: result.page,
+        limit: result.limit,
+        total: result.total,
+        totalPages: result.totalPages,
+        hasMore: result.hasMore
+      },
+      filters: filters 
+    });
+  } catch (error: any) {
+    console.error("Error filtering products:", error);
+    return res.status(400).json({ 
+      success: false, 
+      message: error.message || "Failed to filter products" 
+    });
+  }
+},
 
   // ======================
   // Search products

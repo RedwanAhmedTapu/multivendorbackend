@@ -17,8 +17,6 @@ export interface FooterColumn {
   createdAt: Date;
   updatedAt: Date;
   title: string;
-  slug: string;
-  displayOrder: number;
   isVisible: boolean;
   footerSettingsId: string;
   elements: FooterElement[];
@@ -60,8 +58,6 @@ export interface CreateFooterElementDto {
 
 export interface CreateFooterColumnDto {
   title: string;
-  slug: string;
-  displayOrder?: number;
   isVisible?: boolean;
   elements?: CreateFooterElementDto[];
 }
@@ -88,3 +84,16 @@ export interface CreateFooterSettingsDto {
 }
 
 export interface UpdateFooterSettingsDto extends Partial<CreateFooterSettingsDto> {}
+
+export interface UpdateFooterColumnDto {
+  title?: string;
+  isVisible?: boolean;
+}
+
+export interface UpdateFooterElementDto {
+  label?: string;
+  url?: string;
+  displayOrder?: number;
+  isVisible?: boolean;
+  openInNewTab?: boolean;
+}

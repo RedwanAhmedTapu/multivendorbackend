@@ -111,6 +111,7 @@ export class CategoryFilterController {
       }
 
       const { slug } = req.params;
+      console.log(slug,"null")
 
       // First, find the category by slug
       const category = await prisma.category.findUnique({

@@ -1,8 +1,7 @@
 // src/services/warehouse.service.ts
-import { PrismaClient, WarehouseType, Prisma } from '@prisma/client';
-
+import { PrismaClient } from '@prisma/client';
+import type { WarehouseType, Prisma } from '@prisma/client';
 const prisma = new PrismaClient();
-
 interface CreateWarehouseInput {
   vendorId: string;
   locationId: string;

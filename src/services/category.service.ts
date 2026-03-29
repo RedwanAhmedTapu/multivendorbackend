@@ -202,20 +202,17 @@ export const CategoryService = {
    * ✅ NEW: Search categories by keywords/tags
    */
   async search(query: string) {
-    return prisma.category.findMany({
-      where: {
-        OR: [
-          { name: { contains: query, mode: 'insensitive' } },
-          { description: { contains: query, mode: 'insensitive' } },
-          { keywords: { has: query } },
-          { tags: { has: query } },
-        ],
-      },
-      include: {
-        parent: true,
-      },
-    });
-  },
+  return prisma.category.findMany({
+    where: {
+      OR: [
+        { name: { contains: query, mode: 'insensitive' } },
+        { keywords: { has: query } },
+        { tags: { has: query } },
+      ],
+    },
+    include: { parent: true },
+  });
+},
 
   /**
    * ✅ NEW: Get categories by tag

@@ -1,108 +1,107 @@
 // services/chat.service.ts
-import type { Conversation, Message, ParticipantType } from '@prisma/client';
+import type { ParticipantType } from '@prisma/client';
 import type { CreateConversationPayload } from '../types/chat.ts';
 import { prisma } from '../config/prisma.ts';
 
+// Maps a ParticipantType to its foreign-key field name on ConversationParticipant / Message
+function senderField(type: ParticipantType): string {
+  switch (type) {
+    case 'CUSTOMER':  return 'userId';
+    case 'VENDOR':    return 'vendorId';
+    case 'ADMIN':     return 'employeeId';   // ADMIN reuses the employee FK
+    case 'EMPLOYEE':  return 'employeeId';
+    case 'DELIVERY':  return 'deliveryPersonId';
+  }
+}
+
 export class ChatService {
-  // ✅ Create a new conversation
   async createConversation(payload: CreateConversationPayload, creatorId: string) {
     const { participantIds, participantTypes, productId, orderId, title, type } = payload;
 
     return await prisma.$transaction(async (tx) => {
       const conversation = await tx.conversation.create({
-        data: {
-          type,
-          productId,
-          orderId,
-          title,
-          status: 'OPEN',
-          messageCount: 0,
-          unreadCount: 0,
-        },
+        data: { type, productId, orderId, title, status: 'OPEN', messageCount: 0, unreadCount: 0 },
       });
 
-      const participantsData = participantIds.map((id, index) => ({
-        conversationId: conversation.id,
-        participantType: participantTypes[index] as ParticipantType,
-        userId: participantTypes[index] === 'CUSTOMER' ? id : undefined,
-        vendorId: participantTypes[index] === 'VENDOR' ? id : undefined,
-        employeeId: participantTypes[index] === 'EMPLOYEE' ? id : undefined,
-        deliveryPersonId: participantTypes[index] === 'DELIVERY' ? id : undefined,
-      }));
-
-      await tx.conversationParticipant.createMany({
-        data: participantsData,
+      const participantsData = participantIds.map((id, index) => {
+        const pType = participantTypes[index] as ParticipantType;
+        return {
+          conversationId:   conversation.id,
+          participantType:  pType,
+          userId:           pType === 'CUSTOMER'  ? id : undefined,
+          vendorId:         pType === 'VENDOR'    ? id : undefined,
+          employeeId:       (pType === 'EMPLOYEE' || pType === 'ADMIN') ? id : undefined,
+          deliveryPersonId: pType === 'DELIVERY'  ? id : undefined,
+        };
       });
 
+      await tx.conversationParticipant.createMany({ data: participantsData });
       return conversation;
     });
   }
-// services/chat.service.ts
-async findOrCreateConversation(payload: CreateConversationPayload, creatorId: string) {
-  const { participantIds, participantTypes, productId, orderId, type } = payload;
 
-  // Check if conversation already exists
-  const existing = await prisma.conversation.findFirst({
-    where: {
-      type,
-      productId: productId || undefined,
-      orderId: orderId || undefined,
-      participants: {
-        some: {
-          OR: participantIds.map((id, index) => {
-            const participantType = participantTypes[index] as ParticipantType;
-            if (participantType === 'CUSTOMER') return { userId: id };
-            if (participantType === 'VENDOR') return { vendorId: id };
-            if (participantType === 'EMPLOYEE') return { employeeId: id };
-            if (participantType === 'DELIVERY') return { deliveryPersonId: id };
-            return {};
-          }),
+  async findOrCreateConversation(payload: CreateConversationPayload, creatorId: string) {
+    const { participantIds, participantTypes, productId, orderId, type } = payload;
+
+    const existing = await prisma.conversation.findFirst({
+      where: {
+        type,
+        productId: productId || undefined,
+        orderId:   orderId   || undefined,
+        participants: {
+          some: {
+            OR: participantIds.map((id, index) => {
+              const pType = participantTypes[index] as ParticipantType;
+              return { [senderField(pType)]: id };
+            }),
+          },
         },
       },
-    },
-    include: {
-      participants: true,
-      messages: {
-        take: 20,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          senderUser: true,
-          senderVendor: true,
-          senderEmployee: true,
-          senderDelivery: true,
+      include: {
+        participants: {
+          include: { user: true, vendor: true, employee: true, deliveryPerson: true },
+        },
+        messages: {
+          take: 20,
+          orderBy: { createdAt: 'desc' },
+          include: { senderUser: true, senderVendor: true, senderEmployee: true, senderDelivery: true },
         },
       },
-    },
-  });
+    });
 
-  if (existing) return existing;
+    if (existing) return existing;
+    return this.createConversation(payload, creatorId);
+  }
 
-  // Otherwise create a new one
-  return this.createConversation(payload, creatorId);
-}
-
-  // ✅ Send message
-  async sendMessage(conversationId: string, senderId: string, senderType: ParticipantType, content: string) {
+  async sendMessage(
+    conversationId: string,
+    senderId: string,
+    senderType: ParticipantType,
+    content: string
+  ) {
     return await prisma.$transaction(async (tx) => {
+      const senderFk = senderField(senderType);
+
+      const msgSenderField: Record<string, string> = {
+        userId:           'senderId',
+        vendorId:         'senderVendorId',
+        employeeId:       'senderEmployeeId',
+        deliveryPersonId: 'senderDeliveryPersonId',
+      };
+
       const messageData: any = {
         conversationId,
         content,
         senderType,
         createdAt: new Date(),
+        [msgSenderField[senderFk]]: senderId,
       };
-
-      switch (senderType) {
-        case 'CUSTOMER': messageData.senderId = senderId; break;
-        case 'VENDOR': messageData.senderVendorId = senderId; break;
-        case 'EMPLOYEE': messageData.senderEmployeeId = senderId; break;
-        case 'DELIVERY': messageData.senderDeliveryPersonId = senderId; break;
-      }
 
       const message = await tx.message.create({
         data: messageData,
         include: {
-          senderUser: { select: { id: true, name: true, email: true } },
-          senderVendor: { select: { id: true, storeName: true } },
+          senderUser:     { select: { id: true, name: true, email: true } },
+          senderVendor:   { select: { id: true, storeName: true } },
           senderEmployee: { select: { id: true, designation: true } },
           senderDelivery: { select: { id: true, name: true } },
         },
@@ -111,10 +110,10 @@ async findOrCreateConversation(payload: CreateConversationPayload, creatorId: st
       await tx.conversation.update({
         where: { id: conversationId },
         data: {
-          lastMessageAt: new Date(),
+          lastMessageAt:   new Date(),
           lastMessageText: content,
-          messageCount: { increment: 1 },
-          unreadCount: { increment: 1 },
+          messageCount:    { increment: 1 },
+          unreadCount:     { increment: 1 },
         },
       });
 
@@ -122,33 +121,30 @@ async findOrCreateConversation(payload: CreateConversationPayload, creatorId: st
     });
   }
 
-  // ✅ Get user conversations
-  async getUserConversations(userId: string, userType: ParticipantType, page = 1, limit = 20) {
+  async getUserConversations(
+    userId:   string,
+    userType: ParticipantType,
+    page    = 1,
+    limit   = 20
+  ) {
     const skip = (page - 1) * limit;
-    const whereClause: any = {};
+    const whereClause: any = { [senderField(userType)]: userId };
 
-    switch (userType) {
-      case 'CUSTOMER': whereClause.userId = userId; break;
-      case 'VENDOR': whereClause.vendorId = userId; break;
-      case 'EMPLOYEE': whereClause.employeeId = userId; break;
-      case 'DELIVERY': whereClause.deliveryPersonId = userId; break;
-    }
-
-    const conversations = await prisma.conversationParticipant.findMany({
+    const participants = await prisma.conversationParticipant.findMany({
       where: whereClause,
       include: {
         conversation: {
           include: {
             participants: {
               include: {
-                user: true,
-                vendor: true,
-                employee: true,
-                deliveryPerson: true,
+                user:           { select: { id: true, name: true, email: true } },
+                vendor:         { select: { id: true, storeName: true } },
+                employee:       { select: { id: true, designation: true } },
+                deliveryPerson: { select: { id: true, name: true } },
               },
             },
-            product: true,
-            order: true,
+            product: { select: { id: true, name: true, slug: true } },
+            order:   { select: { id: true, totalAmount: true } },
           },
         },
       },
@@ -157,17 +153,41 @@ async findOrCreateConversation(payload: CreateConversationPayload, creatorId: st
       take: limit,
     });
 
-    return conversations.map(cp => cp.conversation);
+    // Compute per-user unreadCount based on their lastReadAt vs conversation messages
+    const result = await Promise.all(
+      participants.map(async (cp) => {
+        const conv      = cp.conversation;
+        const lastReadAt = cp.lastReadAt;
+
+        const unreadCount = lastReadAt
+          ? await prisma.message.count({
+              where: {
+                conversationId: conv.id,
+                createdAt:      { gt: lastReadAt },
+                NOT: { [senderField(userType)]: userId },
+              },
+            })
+          : await prisma.message.count({
+              where: {
+                conversationId: conv.id,
+                NOT: { [senderField(userType)]: userId },
+              },
+            });
+
+        return { ...conv, unreadCount };
+      })
+    );
+
+    return result;
   }
 
-  // ✅ Get conversation messages
   async getConversationMessages(conversationId: string, page = 1, limit = 50) {
     const skip = (page - 1) * limit;
     return await prisma.message.findMany({
-      where: { conversationId },
+      where:   { conversationId },
       include: {
-        senderUser: true,
-        senderVendor: true,
+        senderUser:     true,
+        senderVendor:   true,
         senderEmployee: true,
         senderDelivery: true,
       },
@@ -177,56 +197,51 @@ async findOrCreateConversation(payload: CreateConversationPayload, creatorId: st
     });
   }
 
-  // ✅ Mark messages as seen
-  async markMessagesAsSeen(conversationId: string, userId: string, userType: ParticipantType, seenAt: Date) {
-    const updateData: any = {};
-    switch (userType) {
-      case 'CUSTOMER': updateData.userId = userId; break;
-      case 'VENDOR': updateData.vendorId = userId; break;
-      case 'EMPLOYEE': updateData.employeeId = userId; break;
-      case 'DELIVERY': updateData.deliveryPersonId = userId; break;
-    }
-
-    const updated = await prisma.conversationParticipant.updateMany({
-      where: { conversationId, ...updateData },
-      data: { lastReadAt: seenAt },
-    });
-
-    return { updatedMessageIds: updated.count > 0 ? [conversationId] : [], seenAt };
+  async markAsRead(conversationId: string, userId: string, userType: ParticipantType) {
+    return this.markMessagesAsSeen(conversationId, userId, userType, new Date());
   }
 
-  // ✅ Mark message delivered
+  async markMessagesAsSeen(
+    conversationId: string,
+    userId:         string,
+    userType:       ParticipantType,
+    seenAt:         Date
+  ) {
+    const whereClause: any = { [senderField(userType)]: userId };
+
+    await prisma.conversationParticipant.updateMany({
+      where: { conversationId, ...whereClause },
+      data:  { lastReadAt: seenAt },
+    });
+
+    await prisma.conversation.update({
+      where: { id: conversationId },
+      data:  { unreadCount: 0 },
+    });
+
+    return { seenAt };
+  }
+
   async markMessageDelivered(messageId: string, deliveredAt: Date) {
     return await prisma.message.update({
       where: { id: messageId },
-      data: { deliveredAt, status: 'DELIVERED' },
+      data:  { deliveredAt, status: 'DELIVERED' },
     });
   }
 
-  // ✅ Get conversation by ID
   async getConversationById(conversationId: string) {
     return await prisma.conversation.findUnique({
-      where: { id: conversationId },
+      where:   { id: conversationId },
       include: {
         participants: {
-          include: {
-            user: true,
-            vendor: true,
-            employee: true,
-            deliveryPerson: true,
-          },
+          include: { user: true, vendor: true, employee: true, deliveryPerson: true },
         },
         product: true,
-        order: true,
+        order:   true,
         messages: {
-          take: 20,
+          take:    20,
           orderBy: { createdAt: 'desc' },
-          include: {
-            senderUser: true,
-            senderVendor: true,
-            senderEmployee: true,
-            senderDelivery: true,
-          },
+          include: { senderUser: true, senderVendor: true, senderEmployee: true, senderDelivery: true },
         },
       },
     });

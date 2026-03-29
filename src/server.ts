@@ -28,6 +28,8 @@ import chatRoutes from "./routes/chat.routes.ts";
 import shippingApi from "./routes/shippingProvider.routes.ts";
 import TermsRoutes from "./routes/terms.routes.ts";
 import { ChatSocket } from "./socket/chatSocket.ts";
+// ✅ FIX: import chatController so we can wire the socket instance into it
+import { chatController } from "./controllers/chat.controller.ts";
 import courierRoutes from "./routes/courier.routes.ts";
 import vendorstorage from "./routes/vendor-storage.routes.ts";
 import filemanger from "./routes/vendor.folder.routes.ts";
@@ -47,6 +49,8 @@ import CartWishitems from "./routes/cartWish.routes.ts";
 import accountingRoutes from './routes/accounting.routes.ts';
 import UserAddressRoutes  from './routes/user-address.routes.ts';
 import footerSettingsRoutes from "./routes/footerSettings.routes.ts";
+import vendorOrderRoutes from "./routes/vendor.order.routes.ts";
+import adminOrderRoutes from "./routes/admin.order.routes.ts";
 
 // Fix __dirname in ES Module
 const __filename = fileURLToPath(import.meta.url);
@@ -55,7 +59,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const server = createServer(app);
 
-const allowedOrigin =  "https://finixmart.com.bd" ;
+const allowedOrigin = process.env.FRONTEND_URL || "http://localhost:3000";
 
 // ✅ INCREASE PAYLOAD SIZE LIMIT
 app.use(express.json({ limit: '50mb' }));
@@ -71,6 +75,7 @@ app.use(
     credentials: true,
   })
 );
+
 // Socket.io CORS
 const io = new Server(server, {
   cors: {
@@ -79,13 +84,6 @@ const io = new Server(server, {
     methods: ["GET", "POST"],
   },
 });
-
-// Optional: rate limiting
-// const limiter = rateLimit({
-//   windowMs: 15 * 60 * 1000,
-//   max: 100,
-// });
-// app.use(limiter);
 
 // ✅ Static file serving (uploads)
 app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
@@ -102,6 +100,8 @@ app.use("/api/bulk-import-category", bulkImportRoutes);
 app.use("/api/vendormanagement", vendorManagementRoutes);
 app.use("/api/customermanagement", customerRoutes);
 app.use("/api/order", orderRoutes);
+app.use("/api/vendor-orders", vendorOrderRoutes);
+app.use("/api/admin-orders", adminOrderRoutes);
 app.use("/api/payout", payoutRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/shippingapi",shippingApi);
@@ -115,28 +115,36 @@ app.use('/api/store-editor', storeLayoutRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/bulkproduct-templates', bulkproducttemplates);
 app.use('/api/category-template', categoryTemplate);
-
 app.use('/api/categories-filter', categoryFilterRoutes);
 app.use("/api/cart-wish",CartWishitems);
 app.use('/api/faqs', faqRoutes);
 app.use('/api/themes', themeRoutes);
-app.use('/api/locations',LocationsRoutes)
+app.use('/api/locations',LocationsRoutes);
 app.use('/api/warehouse',VendorwarehoueRoutes);
 app.use('/api/user-address', UserAddressRoutes);
 app.use('/api/translate', TranslateproductNameToBn);
-
 app.use('/api/accounting',accountingRoutes);
 app.use("/api/footer-settings", footerSettingsRoutes);
 
-
-// ✅ Socket.io handlers
-new ChatSocket(io);
+// ✅ FIX: Capture the ChatSocket instance, then immediately hand it to the
+//    controller so chatController.chatSocketInstance is never null when an
+//    HTTP send-message request arrives.
+//
+//    Previously this was just:  new ChatSocket(io);
+//    The returned instance was thrown away, leaving chatSocketInstance = null,
+//    so broadcastNewMessage() was never called and the vendor never received
+//    real-time message events.
+const chatSocket = new ChatSocket(io);
+chatController.setChatSocket(chatSocket);
 
 app.get("/", (_req, res) => res.send("E-commerce API running 🚀"));
+
 await initRedis();
+
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
+  console.log(`✅ ChatSocket wired to ChatController — real-time messaging active`);
 });
 
 export default app;

@@ -59,7 +59,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const server = createServer(app);
 
-const allowedOrigin = process.env.FRONTEND_URL || "http://localhost:3000";
+const allowedOrigin = process.env.FRONTEND_URL || "https://finixmart.com.bd";
 
 // ✅ INCREASE PAYLOAD SIZE LIMIT
 app.use(express.json({ limit: '50mb' }));

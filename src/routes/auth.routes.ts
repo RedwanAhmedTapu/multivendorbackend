@@ -8,10 +8,13 @@ import {
   refresh,
   logout,
   socialLogin,
-  forgotPassword,      // Add this
-  resetPassword,       // Add this
-  verifyResetToken,    // Add this
+  forgotPassword,      
+  resetPassword,       
+  verifyResetToken,
+  changePassword,    
 } from "../controllers/auth.controller.ts";
+import { authenticateUser } from '../middlewares/auth.middleware.ts';
+
 
 const router = Router();
 
@@ -32,5 +35,6 @@ router.post("/social-login", (req: Request, res: Response) => socialLogin(req, r
 router.post("/forgot-password", (req: Request, res: Response) => forgotPassword(req, res));
 router.post("/verify-reset-token", (req: Request, res: Response) => verifyResetToken(req, res));
 router.post("/reset-password", (req: Request, res: Response) => resetPassword(req, res));
+router.post("/change-password",authenticateUser, (req: Request, res: Response) => changePassword(req, res));
 
 export default router;

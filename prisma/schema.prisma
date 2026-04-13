@@ -412,13 +412,17 @@ model Employee {
 }
 
 model CustomerProfile {
-  id            String  @id @default(cuid())
-  userId        String  @unique
-  address       String?
-  phone         String?
-  wallet        Float   @default(0)
-  loyaltyPoints Int     @default(0)
-  user          User    @relation(fields: [userId], references: [id])
+  id                      String    @id @default(cuid())
+  userId                  String    @unique
+  profileImage            String?
+  gender                  Gender?
+  dateOfBirth             DateTime?
+  isVerifiedBySocialMedia Boolean   @default(false)
+  wallet                  Float     @default(0)
+  loyaltyPoints           Int       @default(0)
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt @default(now())
+  user                    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("customer_profiles")
 }
@@ -3042,7 +3046,11 @@ enum NotificationTargetType {
   VENDOR
   EMPLOYEE
 }
-
+enum Gender{
+  MALE
+  FEMALE
+  OTHER
+}
 
 // ============================================
 // accounting part ENUMS
@@ -3206,3 +3214,4 @@ enum AuditAction {
   APPROVE
   REJECT
 }
+

@@ -3,14 +3,12 @@ import {
   OrderStatus,
   PaymentStatus,
   FulfillmentStatus,
-  CheckoutStatus,
-} from '@prisma/client';
+} from "@prisma/client";
 
 const prisma = new PrismaClient();
 
-// ─── Shared select shapes ────────────────────────────────────────────────────
+// ─── Shared select shapes ─────────────────────────────────────────────────────
 
-/** Lightweight variant info returned inside order items */
 const variantSelect = {
   id: true,
   sku: true,
@@ -19,15 +17,10 @@ const variantSelect = {
   specialPrice: true,
   images: { select: { url: true, altText: true }, take: 1 },
   product: {
-    select: {
-      id: true,
-      name: true,
-      slug: true,
-    },
+    select: { id: true, name: true, slug: true },
   },
 };
 
-/** What we expose for an order list item */
 const orderListSelect = {
   id: true,
   orderNumber: true,
@@ -66,7 +59,6 @@ const orderListSelect = {
   },
 };
 
-/** Full order detail — adds payments, refunds, courier info */
 const orderDetailSelect = {
   ...orderListSelect,
   paidAt: true,
@@ -129,82 +121,68 @@ const orderDetailSelect = {
   },
 };
 
-// ─── Service ─────────────────────────────────────────────────────────────────
+// ─── Service ──────────────────────────────────────────────────────────────────
 
 export class OrderService {
   /**
-   * Converts a completed checkout session into a real Order.
-   *
-   * The checkout session must:
-   *  - belong to this user
-   *  - be in REVIEW status (i.e., shipping + payment info confirmed)
-   *  - not already be linked to an order
+   * Place an order directly from the user's cart selected items.
+   * No checkout session needed — COD flow.
    */
-  async placeOrder(userId: string, checkoutSessionId: string) {
-    // 1. Load & validate the checkout session
-    const session = await prisma.checkoutSession.findUnique({
-      where: { id: checkoutSessionId },
+  async placeOrder(userId: string, userAddressId: string) {
+    // 1. Load cart with selected items
+    const cart = await prisma.carts.findFirst({
+      where: { userId },
       include: {
-        carts: {
+        cart_items: {
+          where: { isSelected: true },
           include: {
-            cart_items: {
-              where: { isSelected: true },
+            product_variants: {
               include: {
-                product_variants: {
-                  include: { product: { select: { vendorId: true } } },
-                },
+                product: { select: { vendorId: true } },
               },
             },
           },
         },
-        shippingAddress: true,
       },
     });
 
-    if (!session) {
-      throw new Error('Checkout session not found');
+    if (!cart) {
+      throw new Error("Cart not found");
     }
-    if (session.carts.userId !== userId) {
-      throw new Error('This checkout session does not belong to you');
-    }
-    if (session.status !== CheckoutStatus.REVIEW) {
-      throw new Error(
-        `Checkout session is in ${session.status} status. Only REVIEW sessions can be placed as orders.`
-      );
-    }
-    if (session.orderId) {
-      throw new Error('This checkout session already has an order');
-    }
-    if (new Date() > session.expiresAt) {
-      throw new Error('Checkout session has expired. Please start a new checkout.');
+    if (!cart.cart_items.length) {
+      throw new Error("No selected items in cart");
     }
 
-    const cartItems = session.carts.cart_items;
-    if (!cartItems.length) {
-      throw new Error('No items in checkout session');
+    // 2. Load and verify shipping address belongs to this user
+    const address = await prisma.userAddress.findFirst({
+      where: { id: userAddressId, userId },
+      include: {
+        locations: { select: { name: true } },
+      },
+    });
+
+    if (!address) {
+      throw new Error("Shipping address not found");
     }
 
-    // 2. Group selected cart items by vendor
-    const byVendor = new Map<
-      string,
-      typeof cartItems
-    >();
+    const cartItems = cart.cart_items;
 
+    // 3. Calculate subtotal from actual cart item prices
+    const subtotal = cartItems.reduce(
+      (sum, item) => sum + item.price * item.quantity,
+      0,
+    );
+
+    // 4. Group items by vendor
+    const byVendor = new Map<string, typeof cartItems>();
     for (const item of cartItems) {
       const vendorId = item.product_variants.product.vendorId;
       if (!byVendor.has(vendorId)) byVendor.set(vendorId, []);
       byVendor.get(vendorId)!.push(item);
     }
 
-    // 3. Build shipping address snapshot
-    if (!session.shippingAddress) {
-      throw new Error('Shipping address is missing from checkout session');
-    }
-    const addr = session.shippingAddress;
-
-    // 4. Create everything in a single transaction
+    // 5. Create everything in one transaction
     const order = await prisma.$transaction(async (tx) => {
-      // 4a. Create the parent Order
       const newOrder = await tx.order.create({
         data: {
           userId,
@@ -212,35 +190,37 @@ export class OrderService {
           status: OrderStatus.PENDING,
           paymentStatus: PaymentStatus.PENDING,
           fulfillmentStatus: FulfillmentStatus.UNFULFILLED,
-          totalAmount: session.total,
-          subtotal: session.subtotal,
-          shippingCost: session.shippingCost,
-          tax: session.tax,
-          discountAmount: session.discount,
+          totalAmount: subtotal,
+          subtotal,
+          shippingCost: 0,
+          tax: 0,
+          discountAmount: 0,
           confirmedAt: new Date(),
 
-          // Shipping address snapshot
+          // Snapshot shipping address
           address: {
             create: {
-              locationId: addr.locationId,
-              country: 'Bangladesh', // adapt as needed
-              state: '',
-              city: '',
-              address: addr.addressLine1 + (addr.addressLine2 ? `, ${addr.addressLine2}` : ''),
-              landmark: addr.landmark ?? undefined,
-              receiverFullName: addr.fullName,
-              phone: addr.phone,
+              locationId: address.locationId,
+              country: "Bangladesh",
+              state: "",
+              city: address.locations?.name ?? "",
+              address:
+                address.addressLine1 +
+                (address.addressLine2 ? `, ${address.addressLine2}` : ""),
+              landmark: address.landmark ?? undefined,
+              receiverFullName: address.fullName,
+              phone: address.phone,
             },
           },
 
-          // Per-vendor sub-orders
+          // One VendorOrder per vendor with their items
           vendorOrders: {
             create: Array.from(byVendor.entries()).map(([vendorId, items]) => ({
               vendorId,
               status: OrderStatus.PENDING,
               fulfillmentStatus: FulfillmentStatus.UNFULFILLED,
               subtotal: items.reduce((s, i) => s + i.price * i.quantity, 0),
-              shippingCost: 0, // refined per courier assignment later
+              shippingCost: 0,
               items: {
                 create: items.map((i) => ({
                   variantId: i.variantId,
@@ -254,17 +234,7 @@ export class OrderService {
         select: orderDetailSelect,
       });
 
-      // 4b. Mark checkout session as COMPLETED and link the order
-      await tx.checkoutSession.update({
-        where: { id: checkoutSessionId },
-        data: {
-          status: CheckoutStatus.COMPLETED,
-          orderId: newOrder.id,
-          completedAt: new Date(),
-        },
-      });
-
-      // 4c. Decrement stock for each variant
+      // Decrement stock
       for (const item of cartItems) {
         await tx.productVariant.update({
           where: { id: item.variantId },
@@ -272,6 +242,10 @@ export class OrderService {
         });
       }
 
+      // Delete placed items from cart after successful order
+      await tx.cart_items.deleteMany({
+        where: { cartId: cart.id, isSelected: true },
+      });
       return newOrder;
     });
 
@@ -279,15 +253,14 @@ export class OrderService {
   }
 
   /**
-   * Return paginated orders for a user with optional status filter.
+   * Paginated order list for logged-in user.
    */
   async getUserOrders(
     userId: string,
-    opts: { page: number; limit: number; status?: string }
+    opts: { page: number; limit: number; status?: string },
   ) {
     const { page, limit, status } = opts;
     const skip = (page - 1) * limit;
-
     const where = {
       userId,
       ...(status ? { status: status as OrderStatus } : {}),
@@ -297,7 +270,7 @@ export class OrderService {
       prisma.order.findMany({
         where,
         select: orderListSelect,
-        orderBy: { createdAt: 'desc' },
+        orderBy: { createdAt: "desc" },
         skip,
         take: limit,
       }),
@@ -308,31 +281,26 @@ export class OrderService {
   }
 
   /**
-   * Return a single order — verifies it belongs to this user.
+   * Single order detail — verifies ownership.
    */
   async getUserOrderById(userId: string, orderId: string) {
     const order = await prisma.order.findFirst({
       where: { id: orderId, userId },
       select: orderDetailSelect,
     });
-
     return order ?? null;
   }
 
   /**
-   * Return courier tracking for every vendor sub-order in this order.
-   * Verifies the order belongs to this user.
+   * Courier tracking for all vendor sub-orders in an order.
    */
   async getOrderTracking(userId: string, orderId: string) {
-    // Confirm ownership
     const order = await prisma.order.findFirst({
       where: { id: orderId, userId },
       select: { id: true, orderNumber: true, status: true },
     });
-
     if (!order) return null;
 
-    // Fetch vendor orders with their courier details
     const vendorOrders = await prisma.vendorOrder.findMany({
       where: { orderId },
       select: {
@@ -371,7 +339,7 @@ export class OrderService {
                 location: true,
                 timestamp: true,
               },
-              orderBy: { timestamp: 'desc' },
+              orderBy: { timestamp: "desc" },
             },
           },
         },
@@ -387,11 +355,9 @@ export class OrderService {
   }
 
   /**
-   * Cancel an order — only allowed when status is PENDING.
-   * Restores variant stock and creates a Refund record if a payment exists.
+   * Cancel a PENDING order — restores stock, creates refund record if paid.
    */
   async cancelOrderByUser(userId: string, orderId: string, reason: string) {
-    // Load the order and verify ownership
     const order = await prisma.order.findFirst({
       where: { id: orderId, userId },
       include: {
@@ -400,36 +366,26 @@ export class OrderService {
       },
     });
 
-    if (!order) {
-      throw new Error('Order not found');
-    }
+    if (!order) throw new Error("Order not found");
     if (order.status !== OrderStatus.PENDING) {
       throw new Error(
-        `Order cannot be cancelled. Current status: ${order.status}. Only PENDING orders can be cancelled.`
+        `Order cannot be cancelled. Current status: ${order.status}. Only PENDING orders can be cancelled.`,
       );
     }
 
     const updatedOrder = await prisma.$transaction(async (tx) => {
-      // 1. Cancel parent order
       const cancelled = await tx.order.update({
         where: { id: orderId },
-        data: {
-          status: OrderStatus.CANCELLED,
-          cancelledAt: new Date(),
-        },
+        data: { status: OrderStatus.CANCELLED, cancelledAt: new Date() },
         select: orderDetailSelect,
       });
 
-      // 2. Cancel each vendor sub-order
       await tx.vendorOrder.updateMany({
         where: { orderId },
-        data: {
-          status: OrderStatus.CANCELLED,
-          cancelledAt: new Date(),
-        },
+        data: { status: OrderStatus.CANCELLED, cancelledAt: new Date() },
       });
 
-      // 3. Restore stock for each item
+      // Restore stock
       for (const vo of order.vendorOrders) {
         for (const item of vo.items) {
           await tx.productVariant.update({
@@ -439,9 +395,9 @@ export class OrderService {
         }
       }
 
-      // 4. Create a refund record if any payment was completed
+      // Create refund record if a payment was already made
       const paidPayment = order.payments.find(
-        (p) => p.status === PaymentStatus.PAID
+        (p) => p.status === PaymentStatus.PAID,
       );
       if (paidPayment) {
         await tx.refund.create({
@@ -449,7 +405,7 @@ export class OrderService {
             orderId,
             amount: paidPayment.amount,
             reason,
-            status: 'PENDING',
+            status: "PENDING",
           },
         });
       }

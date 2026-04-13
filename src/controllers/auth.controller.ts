@@ -523,6 +523,53 @@ export const resetPassword = async (req: Request, res: Response) => {
     res.status(400).json({ message: err.message });
   }
 };
+
+// ------------------- Change Password -------------------
+export const changePassword = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    console.log(req.user,"user")
+    const { currentPassword, newPassword, confirmPassword } = req.body;
+
+    // 🔒 Auth check
+    if (!userId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    // 🧠 Validate passwords
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({ message: "Passwords do not match" });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ message: "Password must be at least 6 characters" });
+    }
+
+    // 👤 Find user
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
+
+    if (!user || !user.password) {
+      return res.status(400).json({ message: "User not found" });
+    }
+
+    // 🔍 Verify current password
+    const isMatch = await bcrypt.compare(currentPassword, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ message: "Current password is incorrect" });
+    }
+
+    // 🔐 Update password via service
+    await authService.changePassword(userId, newPassword);
+
+    return res.json({ message: "Password changed successfully" });
+
+  } catch (err: any) {
+    console.error("💥 Error in changePassword:", err.message);
+    res.status(400).json({ message: err.message });
+  }
+};
 // ------------------- Refresh Token -------------------
 export const refresh = (req: Request, res: Response) => {
 

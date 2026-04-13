@@ -6,22 +6,21 @@ const orderService = new OrderService();
 export class OrderController {
   /**
    * POST /orders
-   * Place a new order from an active checkout session.
-   * Body: { checkoutSessionId }
+   * Body: { userAddressId: string }
    */
   async placeOrder(req: Request, res: Response) {
     try {
-      const userId = req.user!.id; // set by authenticateUser middleware
-      const { checkoutSessionId } = req.body;
+      const userId = req.user!.id;
+      const { userAddressId } = req.body;
 
-      if (!checkoutSessionId) {
+      if (!userAddressId) {
         return res.status(400).json({
           success: false,
-          error: 'checkoutSessionId is required',
+          error: 'userAddressId is required',
         });
       }
 
-      const order = await orderService.placeOrder(userId, checkoutSessionId);
+      const order = await orderService.placeOrder(userId, userAddressId);
 
       return res.status(201).json({
         success: true,
@@ -37,7 +36,6 @@ export class OrderController {
 
   /**
    * GET /orders
-   * Return all orders that belong to the logged-in user (paginated).
    * Query: ?page=1&limit=10&status=PENDING
    */
   async getMyOrders(req: Request, res: Response) {
@@ -60,96 +58,66 @@ export class OrderController {
         },
       });
     } catch (error: any) {
-      return res.status(500).json({
-        success: false,
-        error: error.message,
-      });
+      return res.status(500).json({ success: false, error: error.message });
     }
   }
 
   /**
    * GET /orders/:orderId
-   * Return a single order. The service verifies it belongs to this user.
    */
   async getOrderById(req: Request, res: Response) {
     try {
-      const userId  = req.user!.id;
+      const userId      = req.user!.id;
       const { orderId } = req.params;
 
       const order = await orderService.getUserOrderById(userId, orderId);
 
       if (!order) {
-        return res.status(404).json({
-          success: false,
-          error: 'Order not found',
-        });
+        return res.status(404).json({ success: false, error: 'Order not found' });
       }
 
-      return res.json({
-        success: true,
-        data: order,
-      });
+      return res.json({ success: true, data: order });
     } catch (error: any) {
-      return res.status(500).json({
-        success: false,
-        error: error.message,
-      });
+      return res.status(500).json({ success: false, error: error.message });
     }
   }
 
   /**
    * GET /orders/:orderId/tracking
-   * Return courier tracking history for an order.
    */
   async trackOrder(req: Request, res: Response) {
     try {
-      const userId  = req.user!.id;
+      const userId      = req.user!.id;
       const { orderId } = req.params;
 
       const tracking = await orderService.getOrderTracking(userId, orderId);
 
       if (!tracking) {
-        return res.status(404).json({
-          success: false,
-          error: 'Tracking information not available for this order',
-        });
+        return res.status(404).json({ success: false, error: 'Tracking information not available' });
       }
 
-      return res.json({
-        success: true,
-        data: tracking,
-      });
+      return res.json({ success: true, data: tracking });
     } catch (error: any) {
-      return res.status(500).json({
-        success: false,
-        error: error.message,
-      });
+      return res.status(500).json({ success: false, error: error.message });
     }
   }
 
   /**
    * PATCH /orders/:orderId/cancel
-   * User cancels an order. Only PENDING orders can be cancelled by the user.
    * Body: { reason? }
    */
   async cancelOrder(req: Request, res: Response) {
     try {
-      const userId  = req.user!.id;
+      const userId      = req.user!.id;
       const { orderId } = req.params;
-      const reason  = (req.body.reason as string) || 'Cancelled by customer';
+      const reason      = (req.body.reason as string) || 'Cancelled by customer';
 
       const order = await orderService.cancelOrderByUser(userId, orderId, reason);
 
-      return res.json({
-        success: true,
-        data: order,
-      });
+      return res.json({ success: true, data: order });
     } catch (error: any) {
       const statusCode = error.message.includes('cannot be cancelled') ? 400 : 500;
-      return res.status(statusCode).json({
-        success: false,
-        error: error.message,
-      });
+      return res.status(statusCode).json({ success: false, error: error.message });
     }
   }
 }

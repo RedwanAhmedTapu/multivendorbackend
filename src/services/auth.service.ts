@@ -154,3 +154,14 @@ export const resetPassword = async (userId: string, newPassword: string) => {
 
   return user;
 };
+// ------------------- Change Password (Service) -------------------
+export const changePassword = async (userId: string, newPassword: string) => {
+  const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+  const user = await prisma.user.update({
+    where: { id: userId },
+    data: { password: hashedPassword },
+  });
+
+  return user;
+};

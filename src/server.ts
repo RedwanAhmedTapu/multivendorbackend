@@ -14,6 +14,7 @@ import cookieParser from "cookie-parser";
 
 // Import routes
 import authRoutes from "./routes/auth.routes.ts";
+import customerProfileRouter from './routes/customerProfile.routes.ts';
 import productRoutes from "./routes/product.routes.ts";
 import categoryRoutes from "./routes/category.routes.ts";
 import attributeRoutes from "./routes/attribute.routes.ts";
@@ -92,6 +93,7 @@ app.use('/templates', express.static(path.join(__dirname, 'templates')));
 // ✅ Routes
 app.use("/api/sliders", sliderRoutes);
 app.use("/api/auth", authRoutes);
+app.use('/api/customer/profile', customerProfileRouter);
 app.use("/api/products", productRoutes);
 app.use("/api/categories", categoryRoutes);
 app.use("/api/attributes", attributeRoutes);
@@ -99,7 +101,7 @@ app.use("/api/specifications", specificationRoutes);
 app.use("/api/bulk-import-category", bulkImportRoutes);
 app.use("/api/vendormanagement", vendorManagementRoutes);
 app.use("/api/customermanagement", customerRoutes);
-app.use("/api/order", orderRoutes);
+app.use("/api/user-orders", orderRoutes);
 app.use("/api/vendor-orders", vendorOrderRoutes);
 app.use("/api/admin-orders", adminOrderRoutes);
 app.use("/api/payout", payoutRoutes);

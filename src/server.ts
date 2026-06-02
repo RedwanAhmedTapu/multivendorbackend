@@ -52,6 +52,9 @@ import UserAddressRoutes  from './routes/user-address.routes.ts';
 import footerSettingsRoutes from "./routes/footerSettings.routes.ts";
 import vendorOrderRoutes from "./routes/vendor.order.routes.ts";
 import adminOrderRoutes from "./routes/admin.order.routes.ts";
+import supplierRoutes      from './routes/supplier.routes.ts';
+import purchaseOrderRoutes from './routes/purchase-order.routes.ts';
+import stockRoutes         from './routes/stock.routes.ts';
 
 // Fix __dirname in ES Module
 const __filename = fileURLToPath(import.meta.url);
@@ -60,7 +63,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const server = createServer(app);
 
-const allowedOrigin = process.env.FRONTEND_URL || "https://finixmart.com.bd";
+const allowedOrigin = process.env.FRONTEND_URL || "http://localhost:3000";
 
 // ✅ INCREASE PAYLOAD SIZE LIMIT
 app.use(express.json({ limit: '50mb' }));
@@ -127,6 +130,10 @@ app.use('/api/user-address', UserAddressRoutes);
 app.use('/api/translate', TranslateproductNameToBn);
 app.use('/api/accounting',accountingRoutes);
 app.use("/api/footer-settings", footerSettingsRoutes);
+
+app.use('/api/suppliers',        supplierRoutes);
+app.use('/api/purchase-orders',  purchaseOrderRoutes);
+app.use('/api/stock',            stockRoutes);
 
 // ✅ FIX: Capture the ChatSocket instance, then immediately hand it to the
 //    controller so chatController.chatSocketInstance is never null when an

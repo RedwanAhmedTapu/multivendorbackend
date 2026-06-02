@@ -39,179 +39,214 @@ export const VendorProductService = {
   // ======================
   // Get My Products
   // ======================
-  async getMyProducts(
-    vendorId: string,
-    options: {
-      status?: "PENDING" | "ACTIVE" | "REJECTED" | "DRAFT";
-      search?: string;
-      category?: string;
-      minPrice?: number;
-      maxPrice?: number;
-      sortBy?: string;
-      sortOrder?: "asc" | "desc";
-      page?: number;
-      limit?: number;
-    } = {}
-  ) {
-    const {
-      status,
-      search,
-      category,
-      minPrice,
-      maxPrice,
-      sortBy = "createdAt",
-      sortOrder = "desc",
-      page = 1,
-      limit = 10,
-    } = options;
+ async getMyProducts(
+  vendorId: string,
+  options: {
+    status?: "PENDING" | "ACTIVE" | "REJECTED" | "DRAFT";
+    search?: string;
+    category?: string;
+    minPrice?: number;
+    maxPrice?: number;
+    sortBy?: string;
+    sortOrder?: "asc" | "desc";
+    page?: number;
+    limit?: number;
+  } = {}
+) {
+  const {
+    status,
+    search,
+    category,
+    minPrice,
+    maxPrice,
+    sortBy = "createdAt",
+    sortOrder = "desc",
+    page = 1,
+    limit = 10,
+  } = options;
 
-    // Build where clause
-    const where: any = { vendorId };
+  // Build where clause
+  const where: any = { vendorId };
 
-    // Status filter
-    if (status) {
-      where.approvalStatus = status;
-    }
+  // Status filter
+  if (status) {
+    where.approvalStatus = status;
+  }
 
-    // Search filter (search in name, description, SKU)
-    if (search) {
-      where.OR = [
-        { name: { contains: search, mode: "insensitive" } },
-        { description: { contains: search, mode: "insensitive" } },
-        {
-          variants: {
-            some: { sku: { contains: search, mode: "insensitive" } },
-          },
-        },
-      ];
-    }
-
-    // Category filter
-    if (category) {
-      where.categoryId = category;
-    }
-
-    // Price range filter
-    if (minPrice !== undefined || maxPrice !== undefined) {
-      where.variants = {
-        some: {
-          ...(minPrice !== undefined && { price: { gte: minPrice } }),
-          ...(maxPrice !== undefined && { price: { lte: maxPrice } }),
-        },
-      };
-    }
-
-    // Sort configuration
-    let orderBy: any = { [sortBy]: sortOrder };
-
-    // Handle special sort cases
-    if (sortBy === "price") {
-      orderBy = { variants: { price: sortOrder } };
-    } else if (sortBy === "stock") {
-      orderBy = { variants: { stock: sortOrder } };
-    }
-
-    // Get total count for pagination
-    const total = await prisma.product.count({ where });
-
-    // Calculate pagination
-    const skip = (page - 1) * limit;
-    const totalPages = Math.ceil(total / limit);
-    const hasNext = page < totalPages;
-    const hasPrev = page > 1;
-
-    // Fetch products with pagination
-    const products = await prisma.product.findMany({
-      where,
-      include: {
-        vendor: {
-          select: {
-            id: true,
-            storeName: true,
-            avatar: true,
-            status: true,
-          },
-        },
-        category: {
-          select: {
-            id: true,
-            name: true,
-            slug: true,
-            image: true,
-          },
-        },
-        images: {
-          orderBy: { sortOrder: "asc" },
-          take: 5,
-        },
+  // Search filter (search in name, description, SKU)
+  if (search) {
+    where.OR = [
+      { name: { contains: search, mode: "insensitive" } },
+      { description: { contains: search, mode: "insensitive" } },
+      {
         variants: {
-          include: {
-            images: {
-              orderBy: { sortOrder: "asc" },
-              take: 3,
-            },
-            attributes: {
-              include: {
-                attributeValue: {
-                  include: {
-                    attribute: {
-                      select: {
-                        id: true,
-                        name: true,
-                        slug: true,
-                        type: true,
-                      },
+          some: { sku: { contains: search, mode: "insensitive" } },
+        },
+      },
+    ];
+  }
+
+  // Category filter
+  if (category) {
+    where.categoryId = category;
+  }
+
+  // Price range filter
+  if (minPrice !== undefined || maxPrice !== undefined) {
+    where.variants = {
+      some: {
+        ...(minPrice !== undefined && { price: { gte: minPrice } }),
+        ...(maxPrice !== undefined && { price: { lte: maxPrice } }),
+      },
+    };
+  }
+
+  // Sort configuration
+  let orderBy: any = { [sortBy]: sortOrder };
+
+  if (sortBy === "price") {
+    orderBy = { variants: { price: sortOrder } };
+  } else if (sortBy === "stock") {
+    orderBy = { variants: { stock: sortOrder } };
+  }
+
+  // Get total count for pagination
+  const total = await prisma.product.count({ where });
+
+  // Pagination math
+  const skip = (page - 1) * limit;
+  const totalPages = Math.ceil(total / limit);
+  const hasNext = page < totalPages;
+  const hasPrev = page > 1;
+
+  // Fetch products
+  const rawProducts = await prisma.product.findMany({
+    where,
+    include: {
+      vendor: {
+        select: {
+          id: true,
+          storeName: true,
+          avatar: true,
+          status: true,
+        },
+      },
+      category: {
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          image: true,
+        },
+      },
+      images: {
+        orderBy: { sortOrder: "asc" },
+        take: 5,
+      },
+      variants: {
+        include: {
+          images: {
+            orderBy: { sortOrder: "asc" },
+            take: 3,
+          },
+          attributes: {
+            include: {
+              attributeValue: {
+                include: {
+                  attribute: {
+                    select: {
+                      id: true,
+                      name: true,
+                      slug: true,
+                      type: true,
                     },
                   },
                 },
               },
             },
           },
-          orderBy: { createdAt: "asc" },
-        },
-        attributes: {
-          include: {
-            attribute: {
-              select: {
-                id: true,
-                name: true,
-                slug: true,
-                type: true,
-                unit: true,
+          // ✅ Warehouse stock per variant
+          warehouseStock: {
+            include: {
+              warehouse: {
+                select: {
+                  id: true,
+                  name: true,
+                  location: true,
+                },
               },
             },
-            attributeValue: true,
           },
         },
-        warranty: true,
-        reviews: {
-          select: {
-            id: true,
-            rating: true,
+        orderBy: { createdAt: "asc" },
+      },
+      attributes: {
+        include: {
+          attribute: {
+            select: {
+              id: true,
+              name: true,
+              slug: true,
+              type: true,
+              unit: true,
+            },
           },
-        },
-        approvedBy: {
-          select: {
-            id: true,
-            name: true,
-          },
+          attributeValue: true,
         },
       },
-      orderBy,
-      skip,
-      take: limit,
-    });
+      warranty: true,
+      reviews: {
+        select: {
+          id: true,
+          rating: true,
+        },
+      },
+      approvedBy: {
+        select: {
+          id: true,
+          name: true,
+        },
+      },
+    },
+    orderBy,
+    skip,
+    take: limit,
+  });
 
-    return {
-      products,
-      total,
-      page,
-      limit,
-      totalPages,
-      hasNext,
-      hasPrev,
-    };
-  },
+  // ✅ Enrich each variant with computed stock summary
+  const products = rawProducts.map((product) => ({
+    ...product,
+    variants: product.variants.map((variant) => {
+      const warehouseTotalStock = variant.warehouseStock.reduce(
+        (sum, ws) => sum + ws.quantity,
+        0
+      );
+
+      return {
+        ...variant,
+        warehouseStock: variant.warehouseStock,
+        stockSummary: {
+          systemStock: variant.stock,           
+          warehouseTotalStock,                  
+          damagedQty: variant.damagedQty,
+          reservedQty: variant.reservedQty,
+          availableQty:
+            warehouseTotalStock - variant.damagedQty - variant.reservedQty,
+        },
+      };
+    }),
+  }));
+
+  return {
+    products,
+    total,
+    page,
+    limit,
+    totalPages,
+    hasNext,
+    hasPrev,
+  };
+},
   // ======================
   // Get products by vendor ID
   // ======================

@@ -69,6 +69,105 @@ model User {
 
   @@map("users")
 }
+model Supplier {
+  id             String         @id @default(cuid())
+  name           String
+  supplierType   SupplierType
+  status         SupplierStatus @default(ACTIVE)
+  contactName    String?
+  phone          String
+  phone2         String?
+  email          String
+  country        String?
+  city           String?
+  zipCode        String?
+  fullAddress    String?
+  paymentTerms   String?
+  creditLimit    Float          @default(0)
+  bankAccountName String?
+  bankAccountNo  String?
+  bankName       String?
+  bankBranch     String?
+  routingNo      String?
+  notes          String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  purchaseOrders PurchaseOrder[]
+  coaAccount     ChartOfAccount? @relation("SupplierCOA", fields: [coaAccountId], references: [id])
+  coaAccountId   String?         @unique
+
+  @@map("suppliers")
+}
+model PurchaseOrder {
+  id                  String              @id @default(cuid())
+  purchaseNo          String              @unique
+  supplierId          String
+  warehouseId         String
+  supplierInvoiceNo   String?
+  purchaseDate        DateTime
+  status              PurchaseOrderStatus @default(DRAFT)
+  subtotal            Float
+  vatAmount           Float               @default(0)
+  totalAmount         Float
+  paidAmount          Float               @default(0)
+  dueAmount           Float               @default(0)
+  notes               String?
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+
+  supplier            Supplier            @relation(fields: [supplierId], references: [id])
+  warehouse           VendorWarehouse     @relation(fields: [warehouseId], references: [id])
+  items               PurchaseOrderItem[]
+  payments            PurchasePayment[]
+
+  @@index([supplierId])
+  @@index([status])
+  @@index([warehouseId])
+  @@index([purchaseDate])
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderItem {
+  id              String        @id @default(cuid())
+  purchaseOrderId String
+  variantId       String
+  productName     String
+  variantName     String
+  sku             String
+  quantity        Int
+  unitCost        Float
+  total           Float
+  newAvgCost      Float
+  sellPrice       Float
+  expiryDate      DateTime?
+  createdAt       DateTime      @default(now())
+
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  variant         ProductVariant @relation(fields: [variantId], references: [id])
+
+  @@index([purchaseOrderId])
+  @@map("purchase_order_items")
+}
+
+model PurchasePayment {
+  id              String        @id @default(cuid())
+  purchaseOrderId String
+  amount          Float
+  method          String
+  coaAccountId    String?
+  reference       String?
+  paidAt          DateTime      @default(now())
+  voucherId       String?
+
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+ 
+  voucher  Voucher? @relation("PaymentVoucher", fields: [voucherId], references: [id])
+
+  @@index([purchaseOrderId])
+  @@map("purchase_payments")
+}
+
 
 model Vendor {
   id                       String                     @id @default(cuid())
@@ -671,6 +770,13 @@ model ProductVariant {
   attributes     ProductVariantAttribute[]
   product        Product                   @relation(fields: [productId], references: [id], onDelete: Cascade)
   wishlist_items wishlist_items[]
+  warehouseStock  WarehouseStock[]
+  avgCost         Float?   @default(0)   
+  reorderLevel    Int?     @default(10)
+  damagedQty      Int      @default(0)   
+  reservedQty     Int      @default(0)
+  purchaseItems   PurchaseOrderItem[]
+  stockMovements StockMovement[]
 
   @@map("product_variants")
 }
@@ -1876,7 +1982,12 @@ model VendorWarehouse {
   vendor         Vendor        @relation(fields: [vendorId], references: [id], onDelete: Cascade)
   location locations @relation("LocationToVendorWarehouse", fields: [locationId], references: [id])
 
+  racks               WarehouseRack[] 
   holidays       WarehouseHoliday[]
+  warehouseStock  WarehouseStock[]
+  purchaseOrders  PurchaseOrder[]
+  stockMovementsFrom StockMovement[] @relation("MovementFrom")
+  stockMovementsTo   StockMovement[] @relation("MovementTo")
 
   @@unique([vendorId, code, type])
   @@index([vendorId, isDefault])
@@ -1898,11 +2009,72 @@ model WarehouseHoliday {
 
   @@map("vendor_warehouse_holidays")
 }
+model WarehouseRack {
+  id          String   @id @default(cuid())
+  warehouseId String
+  code        String   // e.g. "A-01", "B-03" — human-readable rack identifier
+  label       String?  // optional friendly name, e.g. "Electronics Row A"
+  row         String?  // row within the warehouse, e.g. "A"
+  shelf       String?  // shelf level within the rack, e.g. "2"
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-enum WarehouseType {
-  PICKUP
-  RETURN
+  warehouse   VendorWarehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  stockItems  WarehouseStock[]
+
+  @@unique([warehouseId, code])
+  @@index([warehouseId])
+  @@map("warehouse_racks")
 }
+model WarehouseStock {
+  id          String         @id @default(cuid())
+  variantId   String
+  warehouseId String
+  rackId      String?  
+  quantity    Int            @default(0)
+  reservedQty Int            @default(0)
+  damagedQty  Int            @default(0)
+
+  
+  rack        WarehouseRack?  @relation(fields: [rackId], references: [id])
+  variant     ProductVariant  @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  warehouse   VendorWarehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([variantId, warehouseId])
+  @@index([warehouseId])
+  @@map("warehouse_stock")
+}
+
+model StockMovement {
+  id            String              @id @default(cuid())
+  variantId     String
+  fromWarehouseId String?
+  toWarehouseId  String?
+  movementType  StockMovementType
+  quantity      Int
+  reason        String?
+  notes         String?
+  saleAmount    Float?              // for sell_damage type
+  coaAccountId  String?             // receipt account for sell_damage
+  voucherId     String?
+  referenceId   String?             // links to PurchaseOrderItem if from receiving
+  createdAt     DateTime            @default(now())
+  createdBy     String?
+
+  variant       ProductVariant      @relation(fields: [variantId], references: [id])
+  fromWarehouse VendorWarehouse?    @relation("MovementFrom", fields: [fromWarehouseId], references: [id])
+  toWarehouse   VendorWarehouse?    @relation("MovementTo", fields: [toWarehouseId], references: [id])
+  voucher  Voucher? @relation("StockVoucher", fields: [voucherId], references: [id])
+
+  @@index([variantId])
+  @@index([movementType])
+  @@index([createdAt])
+  @@map("stock_movements")
+}
+
 
 model UserAddress {
   id                String              @id @default(cuid())  
@@ -2021,6 +2193,7 @@ model ChartOfAccount {
 
   // Relations
   ledgerEntries LedgerEntry[]
+  supplier   Supplier? @relation("SupplierCOA")
 
   @@unique([code, entityType, entityId])
   @@index([entityType, entityId])
@@ -2111,6 +2284,12 @@ model Voucher {
   lockedBy          String?
   lockedAt          DateTime?
   postedBy          String?
+
+   // ADD THESE (cancel support)
+  cancelledBy   String?
+  cancelledAt   DateTime?
+  cancelReason  String?
+  
   
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
@@ -2118,8 +2297,8 @@ model Voucher {
   // Relations
   ledgerEntries     LedgerEntry[]
   
-  // ⚠️ REMOVED WRONG UNIQUE CONSTRAINT
-  // Multiple vouchers can reference same order (payment, delivery, refund)
+  purchasePayments PurchasePayment[] @relation("PaymentVoucher")
+  stockMovements   StockMovement[]   @relation("StockVoucher")
   
   @@index([voucherNumber])
   @@index([voucherType, voucherDate])
@@ -3107,6 +3286,7 @@ enum AccountGroup {
 }
 
 enum VoucherType {
+  PURCHASE
   SALES
   DELIVERY
   PAYMENT
@@ -3138,6 +3318,13 @@ enum EventType {
   REFUND_INITIATED
   REFUND_PROCESSED
   COMMISSION_RECOGNIZED
+
+  PURCHASE_CREATED
+  PURCHASE_PAYMENT
+  STOCK_ADJUSTMENT
+  DAMAGE_RECORDED
+  STOCK_TRANSFER
+  DAMAGE_STOCK_SOLD
 }
 
 enum SSLCommerzStatus {
@@ -3215,3 +3402,38 @@ enum AuditAction {
   REJECT
 }
 
+enum SupplierType {
+  MANUFACTURER
+  WHOLESALER
+  DISTRIBUTOR
+  IMPORTER
+  LOCAL_VENDOR
+}
+
+enum SupplierStatus {
+  ACTIVE
+  INACTIVE
+}
+enum PurchaseOrderStatus {
+  DRAFT
+  CONFIRMED
+  PARTIALLY_PAID
+  PAID
+  RECEIVED
+  CANCELLED
+}
+
+enum WarehouseType {
+  PICKUP
+  RETURN
+}
+
+enum StockMovementType {
+  PURCHASE_RECEIVE   // from PO receiving
+  SALE_DEDUCT        // from order fulfillment
+  ADJUSTMENT         // manual count correction
+  DAMAGE             // mark as damaged
+  TRANSFER           // warehouse to warehouse
+  SELL_DAMAGE        // sell damaged stock
+  RETURN             // customer return
+}

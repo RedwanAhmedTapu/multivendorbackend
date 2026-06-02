@@ -188,6 +188,77 @@ router.post(
   
   controller.triggerAutoVoucher
 );
+// Purchase order confirmed → triggers purchase voucher
+router.post('/webhooks/purchase-created', (_req, res) => {
+  // This webhook is intentionally disabled.
+  //
+  // purchaseService.createPurchaseOrder() creates the PURCHASE voucher
+  // atomically inside its $transaction (step 6). Calling this route after
+  // createPurchaseOrder would create a duplicate voucher.
+  //
+  // If you ever need to fire accounting entries for a purchase from an
+  // external system that bypasses purchaseService, re-enable this route
+  // AND fix getAccountId() to search by code instead of name first.
+  res.status(410).json({
+    success: false,
+    message:
+      'This webhook is disabled. purchaseService.createPurchaseOrder() ' +
+      'posts the purchase voucher atomically. No separate webhook call is needed.',
+  });
+});
+
+// Purchase payment recorded
+router.post('/webhooks/purchase-payment', (_req, res) => {
+  // This webhook is intentionally disabled.
+  //
+  // Payment vouchers are created by:
+  //   - purchaseService.createPurchaseOrder() for upfront payments (step 7)
+  //   - purchaseService.payPurchaseDue() for subsequent due payments
+  //
+  // Both functions handle voucher creation atomically. This endpoint is
+  // not needed and would create duplicates if called.
+  res.status(410).json({
+    success: false,
+    message:
+      'This webhook is disabled. Payment vouchers are created by ' +
+      'purchaseService.createPurchaseOrder() and purchaseService.payPurchaseDue().',
+  });
+});
+
+// Stock movement events (adjustment / damage / transfer / sell_damage)
+// A single endpoint dispatches based on movementType
+router.post('/webhooks/stock-movement', async (req, res) => {
+  try {
+    const { movementType, ...rest } = req.body;
+
+    const eventMap: Record<string, string> = {
+      ADJUSTMENT:  'STOCK_ADJUSTMENT',
+      DAMAGE:      'DAMAGE_RECORDED',
+      TRANSFER:    'STOCK_TRANSFER',
+      SELL_DAMAGE: 'DAMAGE_STOCK_SOLD',
+    };
+
+    const eventType = eventMap[movementType];
+    if (!eventType) {
+      return res.status(400).json({ success: false, message: `No accounting event for movement type: ${movementType}` });
+    }
+
+    const result = await controller.triggerAutoVoucher(
+      {
+        params: { eventType },
+        body: {
+          ...rest,
+          avgCost: rest.avgCost ? new Decimal(rest.avgCost) : undefined,
+          saleAmount: rest.saleAmount ? new Decimal(rest.saleAmount) : undefined,
+          logisticsCost: rest.logisticsCost ? new Decimal(rest.logisticsCost) : undefined,
+        },
+      } as any,
+      res
+    );
+  } catch (error: any) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+});
 
 // Webhook endpoint for order confirmation
 router.post(

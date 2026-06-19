@@ -1,465 +1,605 @@
-// services/storeLayout.service.ts
-import { prisma } from '../config/prisma.ts';
-import type { 
-  ComponentType, 
-  BackgroundType, 
-  CategoryLayout, 
-  BannerType, 
-  BannerLayout, 
-  TimerPosition 
+import { slugify } from '../utils/slugify.ts';
+import type {
+  ComponentType,
+  BackgroundType,
+  CategoryLayout,
+  DecorationStatus,
+  Prisma,
+  
 } from '@prisma/client';
+import { PrismaClient } from '@prisma/client';
 
-export interface CreateStoreLayoutInput {
+
+const prisma = new PrismaClient();
+// ─────────────────────────────────────────────
+// INPUT TYPES
+// ─────────────────────────────────────────────
+
+export interface CreateDecorationInput {
   vendorId: string;
   name: string;
-  description?: string;
-  isDefault?: boolean;
   thumbnail?: string;
+  isDefault?: boolean;
+}
+
+export interface UpdateDecorationInput {
+  name?: string;
+  thumbnail?: string;
+  status?: DecorationStatus;
+  publishedAt?: Date;
 }
 
 export interface CreateComponentInput {
-  layoutId: string;
+  decorationId: string;
   type: ComponentType;
   sortOrder: number;
+  isVisible?: boolean;
   config?: ComponentConfigInput;
   productIds?: string[];
   categoryIds?: string[];
 }
 
+export interface UpdateComponentInput {
+  sortOrder?: number;
+  isVisible?: boolean;
+  config?: ComponentConfigInput;
+}
+
 export interface ComponentConfigInput {
-  // Store Banner
+  // Promoted scalar fields
   bannerImage?: string;
   bannerBackgroundType?: BackgroundType;
   bannerBackgroundColor?: string;
-  showChatButton?: boolean;
-  showRating?: boolean;
-  showVerifiedBadge?: boolean;
-  showFollowers?: boolean;
-  showLogo?: boolean;
-  showStoreName?: boolean;
-  
-  // Category Component
   categoryLayout?: CategoryLayout;
-  categoriesPerRow?: number;
-  showCategoryCount?: boolean;
-  categorySlideInterval?: number;
-  
-  // Product Component
   productsPerRow?: number;
+  categoriesPerRow?: number;
+  autoSlide?: boolean;
+  slideInterval?: number;
+  countdownEndDate?: Date;
   showProductPrice?: boolean;
   showProductRating?: boolean;
   showAddToCart?: boolean;
-  autoSlide?: boolean;
-  slideInterval?: number;
-  
-  // Banner Component
-  bannerType?: BannerType;
-  bannerLayout?: BannerLayout;
-  bannerHeight?: string;
-  bannerImages?: any[];
-  
-  // Countdown Component
-  countdownBannerImage?: string;
-  countdownEndDate?: Date;
-  timerPosition?: TimerPosition;
-  showDays?: boolean;
-  showHours?: boolean;
-  showMinutes?: boolean;
-  showSeconds?: boolean;
-  countdownTitle?: string;
-  countdownBackgroundColor?: string;
-  
-  // Voucher Component
-  voucherBannerImage?: string;
-  voucherCode?: string;
-  voucherTitle?: string;
-  voucherDescription?: string;
-  voucherBackgroundColor?: string;
-  voucherTextColor?: string;
-  minOrderAmount?: number;
-  discountAmount?: number;
-  discountPercentage?: number;
-  voucherValidFrom?: Date;
-  voucherValidTo?: Date;
-  showVoucherCode?: boolean;
-  useDefaultDesign?: boolean;
-  
+  showCategoryCount?: boolean;
   // Styling
   customCSS?: string;
   padding?: string;
   margin?: string;
   borderRadius?: string;
   boxShadow?: string;
+  // Everything else (voucher, countdown details, banner images, timer config, etc.)
+  settings?: Record<string, unknown>;
 }
 
 export interface UpdateBannerCustomizationInput {
   bannerImage?: string;
   bannerBackgroundType?: BackgroundType;
   bannerBackgroundValue?: string;
-  showChatButton?: boolean;
-  showRating?: boolean;
-  showVerifiedBadge?: boolean;
-  showFollowers?: boolean;
-  chatButtonColor?: string;
-  storeNameColor?: string;
-  textColor?: string;
 }
 
-export class StoreLayoutService {
-  // Store Layout Methods
-  async createStoreLayout(data: CreateStoreLayoutInput) {
-    // If setting as default, unset other defaults for this vendor
-    if (data.isDefault) {
-      await prisma.storeLayout.updateMany({
-        where: { vendorId: data.vendorId, isDefault: true },
-        data: { isDefault: false }
-      });
-    }
+// ─────────────────────────────────────────────
+// REUSABLE INCLUDE SHAPES
+// ─────────────────────────────────────────────
 
-    return prisma.storeLayout.create({
-      data: {
-        vendorId: data.vendorId,
-        name: data.name,
-        description: data.description,
-        isDefault: data.isDefault || false,
-        thumbnail: data.thumbnail,
-      },
-      include: {
-        components: {
-          include: {
-            config: true,
-            products: {
-              include: { product: true }
-            },
-            categories: {
-              include: { category: true }
-            }
-          },
-          orderBy: { sortOrder: 'asc' }
-        }
-      }
-    });
-  }
-
-  async getVendorLayouts(vendorId: string) {
-    return prisma.storeLayout.findMany({
-      where: { vendorId },
-      include: {
-        components: {
-          include: {
-            config: true,
-            products: {
-              include: { product: true }
-            },
-            categories: {
-              include: { category: true }
-            }
-          },
-          orderBy: { sortOrder: 'asc' }
-        }
-      },
-      orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }]
-    });
-  }
-
-  async getStoreLayout(id: string) {
-    return prisma.storeLayout.findUnique({
-      where: { id },
-      include: {
-        components: {
-          include: {
-            config: true,
-            products: {
-              include: { product: true }
-            },
-            categories: {
-              include: { category: true }
-            }
-          },
-          orderBy: { sortOrder: 'asc' }
-        },
-        vendor: {
-          include: {
-            performance: true,
-            followers: true,
-            storeSettings: true,
-            bannerCustomization: true
-          }
-        }
-      }
-    });
-  }
-
-  async setDefaultLayout(vendorId: string, layoutId: string) {
-    return prisma.$transaction(async (tx) => {
-      // Unset current default
-      await tx.storeLayout.updateMany({
-        where: { vendorId, isDefault: true },
-        data: { isDefault: false }
-      });
-
-      // Set new default
-      return tx.storeLayout.update({
-        where: { id: layoutId },
-        data: { isDefault: true },
+/** Full decoration with all components — used only when the builder loads */
+const DECORATION_FULL = {
+  components: {
+    where: { isVisible: true },
+    orderBy: { sortOrder: 'asc' as const },
+    include: {
+      config: true,
+      products: {
+        orderBy: { sortOrder: 'asc' as const },
         include: {
-          components: {
-            include: {
-              config: true,
-              products: {
-                include: { product: true }
+          product: {
+            select: {
+              id: true,
+              name: true,
+              slug: true,
+              images: { take: 1, select: { url: true } },
+              variants: {
+                take: 1,
+                select: { price: true, specialPrice: true, sku: true },
               },
-              categories: {
-                include: { category: true }
-              }
             },
-            orderBy: { sortOrder: 'asc' }
-          }
-        }
+          },
+        },
+      },
+      categories: {
+        orderBy: { sortOrder: 'asc' as const },
+        include: {
+          category: {
+            select: { id: true, name: true, slug: true, image: true },
+          },
+        },
+      },
+    },
+  },
+} satisfies Prisma.StoreDecorationInclude;
+
+/** Lightweight list — for the decoration gallery/picker */
+const DECORATION_LIST = {
+  _count: { select: { components: true } },
+} satisfies Prisma.StoreDecorationInclude;
+
+/** Single component with its relations — returned after mutations */
+const COMPONENT_DETAIL = {
+  config: true,
+  products: {
+    orderBy: { sortOrder: 'asc' as const },
+    include: {
+      product: {
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          images: { take: 1, select: { url: true } },
+        },
+      },
+    },
+  },
+  categories: {
+    orderBy: { sortOrder: 'asc' as const },
+    include: {
+      category: {
+        select: { id: true, name: true, slug: true, image: true },
+      },
+    },
+  },
+} satisfies Prisma.DecorationComponentInclude;
+
+// ─────────────────────────────────────────────
+// SERVICE
+// ─────────────────────────────────────────────
+
+export class StoreDecorationService {
+
+  // ── Decoration CRUD ────────────────────────
+
+  async createDecoration(data: CreateDecorationInput) {
+    const slug = await this.generateUniqueSlug(data.name);
+
+    return prisma.$transaction(async (tx) => {
+      // Unset default if needed — single targeted update, no full scan
+      if (data.isDefault) {
+        await tx.storeDecoration.updateMany({
+          where: { vendorId: data.vendorId, isDefault: true },
+          data: { isDefault: false },
+        });
+      }
+
+      return tx.storeDecoration.create({
+        data: {
+          vendorId: data.vendorId,
+          name: data.name,
+          slug,
+          isDefault: data.isDefault ?? false,
+          thumbnail: data.thumbnail,
+          status: 'DRAFT',
+        },
+        include: DECORATION_LIST,
       });
     });
   }
 
-  async deleteStoreLayout(id: string) {
-    return prisma.storeLayout.delete({
-      where: { id }
+  /** Lightweight list for gallery — no deep component loading */
+  async getVendorDecorations(vendorId: string) {
+    console.log(vendorId,"f")
+    return prisma.storeDecoration.findMany({
+      where: { vendorId },
+      include: DECORATION_LIST,
+      orderBy: [{ isDefault: 'desc' }, { updatedAt: 'desc' }],
     });
   }
 
-  // Component Methods
-  async addComponentToLayout(data: CreateComponentInput) {
+  /** Full load — only called when vendor opens the builder */
+  async getDecorationById(id: string, vendorId: string) {
+    return prisma.storeDecoration.findFirst({
+      where: { id, vendorId },
+      include: DECORATION_FULL,
+    });
+  }
+
+  /** Public storefront — fetch the live default by slug or vendorId */
+  async getPublishedDecoration(vendorId: string) {
+    return prisma.storeDecoration.findFirst({
+      where: { vendorId, isDefault: true, status: 'PUBLISHED' },
+      include: DECORATION_FULL,
+    });
+  }
+
+  async updateDecoration(id: string, vendorId: string, data: UpdateDecorationInput) {
+    // Optimistic lock: bump version on every save
+    return prisma.storeDecoration.update({
+      where: { id, vendorId },
+      data: { ...data, version: { increment: 1 } },
+      include: DECORATION_LIST,
+    });
+  }
+
+  async publishDecoration(id: string, vendorId: string) {
     return prisma.$transaction(async (tx) => {
-      const component = await tx.storeLayoutComponent.create({
+      // Pull currently-default published decoration id in one read
+      const current = await tx.storeDecoration.findFirst({
+        where: { vendorId, isDefault: true, status: 'PUBLISHED' },
+        select: { id: true },
+      });
+
+      // Demote current default (only if different)
+      if (current && current.id !== id) {
+        await tx.storeDecoration.update({
+          where: { id: current.id },
+          data: { isDefault: false, status: 'ARCHIVED' },
+        });
+      }
+
+      return tx.storeDecoration.update({
+        where: { id, vendorId },
         data: {
-          layoutId: data.layoutId,
+          status: 'PUBLISHED',
+          isDefault: true,
+          publishedAt: new Date(),
+          version: { increment: 1 },
+        },
+        include: DECORATION_LIST,
+      });
+    });
+  }
+
+  async archiveDecoration(id: string, vendorId: string) {
+    return prisma.storeDecoration.update({
+      where: { id, vendorId },
+      data: { status: 'ARCHIVED', isDefault: false, version: { increment: 1 } },
+      include: DECORATION_LIST,
+    });
+  }
+
+  async deleteDecoration(id: string, vendorId: string) {
+    // Cascade deletes components/config/products/categories via FK
+    return prisma.storeDecoration.delete({ where: { id, vendorId } });
+  }
+
+  /** Duplicate an existing decoration as a new DRAFT */
+  async duplicateDecoration(id: string, vendorId: string, name: string) {
+    const source = await prisma.storeDecoration.findFirst({
+      where: { id, vendorId },
+      include: DECORATION_FULL,
+    });
+    if (!source) throw new Error('Decoration not found');
+
+    const slug = await this.generateUniqueSlug(name);
+
+    return prisma.$transaction(async (tx) => {
+      const copy = await tx.storeDecoration.create({
+        data: {
+          vendorId,
+          name,
+          slug,
+          status: 'DRAFT',
+          thumbnail: source.thumbnail,
+          isDefault: false,
+        },
+      });
+
+      // Re-create each component + its relations
+      for (const comp of source.components) {
+        const newComp = await tx.decorationComponent.create({
+          data: {
+            decorationId: copy.id,
+            type: comp.type,
+            sortOrder: comp.sortOrder,
+            isVisible: comp.isVisible,
+          },
+        });
+
+        if (comp.config) {
+          const { id: _id, componentId: _cid, createdAt: _ca, updatedAt: _ua, ...configData } = comp.config;
+          await tx.decorationComponentConfig.create({
+            data: { componentId: newComp.id, ...configData },
+          });
+        }
+
+        if (comp.products.length > 0) {
+          await tx.decorationComponentProduct.createMany({
+            data: comp.products.map((p) => ({
+              componentId: newComp.id,
+              productId: p.productId,
+              sortOrder: p.sortOrder,
+              isFeatured: p.isFeatured,
+            })),
+          });
+        }
+
+        if (comp.categories.length > 0) {
+          await tx.decorationComponentCategory.createMany({
+            data: comp.categories.map((c) => ({
+              componentId: newComp.id,
+              categoryId: c.categoryId,
+              sortOrder: c.sortOrder,
+              isFeatured: c.isFeatured,
+            })),
+          });
+        }
+      }
+
+      return tx.storeDecoration.findUnique({
+        where: { id: copy.id },
+        include: DECORATION_LIST,
+      });
+    });
+  }
+
+  // ── Component CRUD ─────────────────────────
+
+  async addComponent(data: CreateComponentInput) {
+    return prisma.$transaction(async (tx) => {
+      const component = await tx.decorationComponent.create({
+        data: {
+          decorationId: data.decorationId,
           type: data.type,
           sortOrder: data.sortOrder,
-        }
+          isVisible: data.isVisible ?? true,
+        },
       });
 
-      // Create config if provided
       if (data.config) {
-        await tx.componentConfig.create({
-          data: {
-            componentId: component.id,
-            ...data.config
-          }
+        await tx.decorationComponentConfig.create({
+          data: { componentId: component.id, ...data.config },
         });
       }
 
-      // Add products if provided
-      if (data.productIds && data.productIds.length > 0) {
-        await tx.componentProduct.createMany({
-          data: data.productIds.map((productId, index) => ({
+      if (data.productIds?.length) {
+        await tx.decorationComponentProduct.createMany({
+          data: data.productIds.map((productId, i) => ({
             componentId: component.id,
             productId,
-            sortOrder: index
-          }))
+            sortOrder: i,
+          })),
         });
       }
 
-      // Add categories if provided
-      if (data.categoryIds && data.categoryIds.length > 0) {
-        await tx.componentCategory.createMany({
-          data: data.categoryIds.map((categoryId, index) => ({
+      if (data.categoryIds?.length) {
+        await tx.decorationComponentCategory.createMany({
+          data: data.categoryIds.map((categoryId, i) => ({
             componentId: component.id,
             categoryId,
-            sortOrder: index
-          }))
+            sortOrder: i,
+          })),
         });
       }
 
-      return this.getComponentWithDetails(component.id);
+      // Bump decoration version so storefront cache can invalidate
+      await tx.storeDecoration.update({
+        where: { id: data.decorationId },
+        data: { version: { increment: 1 } },
+      });
+
+      return tx.decorationComponent.findUnique({
+        where: { id: component.id },
+        include: COMPONENT_DETAIL,
+      });
     });
   }
 
-  async updateComponent(componentId: string, data: {
-    sortOrder?: number;
-    config?: ComponentConfigInput;
-  }) {
+  async updateComponent(componentId: string, decorationId: string, data: UpdateComponentInput) {
     return prisma.$transaction(async (tx) => {
-      // Update component
-      if (data.sortOrder !== undefined) {
-        await tx.storeLayoutComponent.update({
+      const { config, ...componentFields } = data;
+
+      if (Object.keys(componentFields).length > 0) {
+        await tx.decorationComponent.update({
           where: { id: componentId },
-          data: { sortOrder: data.sortOrder }
+          data: componentFields,
         });
       }
 
-      // Update or create config
-      if (data.config) {
-        const existingConfig = await tx.componentConfig.findUnique({
-          where: { componentId }
+      if (config) {
+        // upsert avoids the redundant findUnique + conditional create/update
+        await tx.decorationComponentConfig.upsert({
+          where: { componentId },
+          create: { componentId, ...config },
+          update: config,
         });
-
-        if (existingConfig) {
-          await tx.componentConfig.update({
-            where: { componentId },
-            data: data.config
-          });
-        } else {
-          await tx.componentConfig.create({
-            data: {
-              componentId,
-              ...data.config
-            }
-          });
-        }
       }
 
-      return this.getComponentWithDetails(componentId);
-    });
-  }
-
-  async deleteComponent(componentId: string) {
-    return prisma.storeLayoutComponent.delete({
-      where: { id: componentId }
-    });
-  }
-
-  async updateComponentProducts(componentId: string, productIds: string[]) {
-    return prisma.$transaction(async (tx) => {
-      // Remove existing products
-      await tx.componentProduct.deleteMany({
-        where: { componentId }
+      await tx.storeDecoration.update({
+        where: { id: decorationId },
+        data: { version: { increment: 1 } },
       });
 
-      // Add new products
+      return tx.decorationComponent.findUnique({
+        where: { id: componentId },
+        include: COMPONENT_DETAIL,
+      });
+    });
+  }
+
+  async deleteComponent(componentId: string, decorationId: string) {
+    return prisma.$transaction(async (tx) => {
+      await tx.decorationComponent.delete({ where: { id: componentId } });
+      await tx.storeDecoration.update({
+        where: { id: decorationId },
+        data: { version: { increment: 1 } },
+      });
+    });
+  }
+
+  /** Reorder all components in one shot — avoids N individual updates */
+  async reorderComponents(decorationId: string, orderedIds: string[]) {
+    return prisma.$transaction([
+      ...orderedIds.map((id, index) =>
+        prisma.decorationComponent.update({
+          where: { id },
+          data: { sortOrder: index },
+        })
+      ),
+      prisma.storeDecoration.update({
+        where: { id: decorationId },
+        data: { version: { increment: 1 } },
+      }),
+    ]);
+  }
+
+  // ── Component Products ─────────────────────
+
+  async setComponentProducts(componentId: string, decorationId: string, productIds: string[]) {
+    return prisma.$transaction(async (tx) => {
+      await tx.decorationComponentProduct.deleteMany({ where: { componentId } });
+
       if (productIds.length > 0) {
-        await tx.componentProduct.createMany({
-          data: productIds.map((productId, index) => ({
+        await tx.decorationComponentProduct.createMany({
+          data: productIds.map((productId, i) => ({
             componentId,
             productId,
-            sortOrder: index
-          }))
+            sortOrder: i,
+          })),
         });
       }
 
-      return this.getComponentWithDetails(componentId);
-    });
-  }
-
-  async updateComponentCategories(componentId: string, categoryIds: string[]) {
-    return prisma.$transaction(async (tx) => {
-      // Remove existing categories
-      await tx.componentCategory.deleteMany({
-        where: { componentId }
+      await tx.storeDecoration.update({
+        where: { id: decorationId },
+        data: { version: { increment: 1 } },
       });
 
-      // Add new categories
-      if (categoryIds.length > 0) {
-        await tx.componentCategory.createMany({
-          data: categoryIds.map((categoryId, index) => ({
-            componentId,
-            categoryId,
-            sortOrder: index
-          }))
-        });
-      }
-
-      return this.getComponentWithDetails(componentId);
+      return tx.decorationComponent.findUnique({
+        where: { id: componentId },
+        include: COMPONENT_DETAIL,
+      });
     });
   }
 
-  // Banner Customization Methods
+  // ── Component Categories ───────────────────
+
+  async setComponentCategories(componentId: string, decorationId: string, categoryIds: string[]) {
+    return prisma.$transaction(async (tx) => {
+      await tx.decorationComponentCategory.deleteMany({ where: { componentId } });
+
+      if (categoryIds.length > 0) {
+        await tx.decorationComponentCategory.createMany({
+          data: categoryIds.map((categoryId, i) => ({
+            componentId,
+            categoryId,
+            sortOrder: i,
+          })),
+        });
+      }
+
+      await tx.storeDecoration.update({
+        where: { id: decorationId },
+        data: { version: { increment: 1 } },
+      });
+
+      return tx.decorationComponent.findUnique({
+        where: { id: componentId },
+        include: COMPONENT_DETAIL,
+      });
+    });
+  }
+
+  // ── Banner Customization ───────────────────
+
   async getBannerCustomization(vendorId: string) {
     return prisma.storeBannerCustomization.findUnique({
       where: { vendorId },
-      include: {
-        vendor: {
-          include: {
-            performance: true,
-            followers: true
-          }
-        }
-      }
     });
   }
 
-  async updateBannerCustomization(vendorId: string, data: UpdateBannerCustomizationInput) {
-    const existing = await prisma.storeBannerCustomization.findUnique({
-      where: { vendorId }
-    });
-
-    if (existing) {
-      return prisma.storeBannerCustomization.update({
-        where: { vendorId },
-        data,
-        include: {
-          vendor: {
-            include: {
-              performance: true,
-              followers: true
-            }
-          }
-        }
-      });
-    } else {
-      return prisma.storeBannerCustomization.create({
-        data: {
-          vendorId,
-          ...data
-        },
-        include: {
-          vendor: {
-            include: {
-              performance: true,
-              followers: true
-            }
-          }
-        }
-      });
-    }
-  }
-
-  // Helper Methods
-  private async getComponentWithDetails(componentId: string) {
-    return prisma.storeLayoutComponent.findUnique({
-      where: { id: componentId },
-      include: {
-        config: true,
-        products: {
-          include: { product: true },
-          orderBy: { sortOrder: 'asc' }
-        },
-        categories: {
-          include: { category: true },
-          orderBy: { sortOrder: 'asc' }
-        }
-      }
+  async upsertBannerCustomization(vendorId: string, data: UpdateBannerCustomizationInput) {
+    return prisma.storeBannerCustomization.upsert({
+      where: { vendorId },
+      create: { vendorId, ...data },
+      update: data,
     });
   }
 
-  // Template Methods
+  // ── Templates ─────────────────────────────
+
   async getLayoutTemplates(category?: string) {
     return prisma.layoutTemplate.findMany({
       where: category ? { category } : undefined,
-      orderBy: { usageCount: 'desc' }
+      orderBy: { usageCount: 'desc' },
+      select: {
+        id: true,
+        name: true,
+        thumbnail: true,
+        category: true,
+        isPremium: true,
+        usageCount: true,
+        rating: true,
+        // structure is large — omit from list, load on demand
+      },
     });
   }
 
-  async applyTemplate(vendorId: string, templateId: string) {
+  async applyTemplate(vendorId: string, templateId: string, name: string) {
     const template = await prisma.layoutTemplate.findUnique({
-      where: { id: templateId }
-    });
-
-    if (!template) {
-      throw new Error('Template not found');
-    }
-
-    // Increment usage count
-    await prisma.layoutTemplate.update({
       where: { id: templateId },
-      data: { usageCount: { increment: 1 } }
     });
+    if (!template) throw new Error('Template not found');
 
-    // Create layout from template structure
-    const structure = template.structure as any;
-    return this.createStoreLayout({
-      vendorId,
-      name: template.name,
-      description: `Created from template: ${template.name}`,
-      thumbnail: template.thumbnail
+    const slug = await this.generateUniqueSlug(name || template.name);
+
+    return prisma.$transaction(async (tx) => {
+      await tx.layoutTemplate.update({
+        where: { id: templateId },
+        data: { usageCount: { increment: 1 } },
+      });
+
+      const decoration = await tx.storeDecoration.create({
+        data: {
+          vendorId,
+          name: name || template.name,
+          slug,
+          thumbnail: template.thumbnail,
+          status: 'DRAFT',
+        },
+      });
+
+      // Build components from template structure if it defines them
+      const structure = template.structure as {
+        components?: Array<{
+          type: ComponentType;
+          sortOrder: number;
+          config?: ComponentConfigInput;
+        }>;
+      };
+
+      if (structure?.components?.length) {
+        for (const comp of structure.components) {
+          const newComp = await tx.decorationComponent.create({
+            data: {
+              decorationId: decoration.id,
+              type: comp.type,
+              sortOrder: comp.sortOrder,
+            },
+          });
+          if (comp.config) {
+            await tx.decorationComponentConfig.create({
+              data: { componentId: newComp.id, ...comp.config },
+            });
+          }
+        }
+      }
+
+      return tx.storeDecoration.findUnique({
+        where: { id: decoration.id },
+        include: DECORATION_FULL,
+      });
     });
+  }
+
+  // ── Helpers ────────────────────────────────
+
+  private async generateUniqueSlug(name: string): Promise<string> {
+    const base = slugify(name);
+    const existing = await prisma.storeDecoration.findMany({
+      where: { slug: { startsWith: base } },
+      select: { slug: true },
+    });
+    if (!existing.length) return base;
+    const suffixes = existing
+      .map((d) => d.slug.replace(base, '').replace(/^-/, ''))
+      .filter((s) => /^\d+$/.test(s))
+      .map(Number);
+    const next = suffixes.length ? Math.max(...suffixes) + 1 : 2;
+    return `${base}-${next}`;
   }
 }

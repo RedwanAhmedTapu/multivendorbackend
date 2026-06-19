@@ -1,31 +1,52 @@
-// routes/storeLayout.routes.ts
 import { Router } from 'express';
-import { StoreLayoutController } from '../controllers/storeLayout.controller.ts';
+import { StoreDecorationController } from '../controllers/storeLayout.controller.ts';
+import { authenticateUser, authorizeRoles } from "../middlewares/auth.middleware.ts";
 
 const router = Router();
-const controller = new StoreLayoutController();
+const ctrl = new StoreDecorationController();
 
+// ─────────────────────────────────────────────
+// PUBLIC  (no auth)
+// ─────────────────────────────────────────────
 
-// Store Layout Routes
-router.post('/layouts', controller.createStoreLayout.bind(controller));
-router.get('/layouts', controller.getVendorLayouts.bind(controller));
-router.get('/layouts/:id', controller.getStoreLayout.bind(controller));
-router.put('/layouts/default', controller.setDefaultLayout.bind(controller));
-router.delete('/layouts/:id', controller.deleteStoreLayout.bind(controller));
+/** Storefront renderer fetches the live published decoration */
+router.get('/storefront/:vendorId', ctrl.getStorefront.bind(ctrl));
 
-// Component Routes
-router.post('/components', controller.addComponent.bind(controller));
-router.put('/components/:componentId', controller.updateComponent.bind(controller));
-router.delete('/components/:componentId', controller.deleteComponent.bind(controller));
-router.put('/components/:componentId/products', controller.updateComponentProducts.bind(controller));
-router.put('/components/:componentId/categories', controller.updateComponentCategories.bind(controller));
+/** Template browser — anyone can browse */
+router.get('/templates', ctrl.listTemplates.bind(ctrl));
 
-// Banner Customization Routes
-router.get('/banner-customization', controller.getBannerCustomization.bind(controller));
-router.put('/banner-customization', controller.updateBannerCustomization.bind(controller));
+// ─────────────────────────────────────────────
+// VENDOR-AUTHENTICATED
+// All routes below require: authenticate, requireVendor
+// Uncomment the middleware imports above and apply:
+  router.use(authenticateUser, authorizeRoles('VENDOR'));
+// ─────────────────────────────────────────────
 
-// Template Routes
-router.get('/templates', controller.getTemplates.bind(controller));
-router.post('/templates/apply', controller.applyTemplate.bind(controller));
+// ── Decoration management ──────────────────
+router.post('/',               ctrl.createDecoration.bind(ctrl));
+router.get('/',                ctrl.listDecorations.bind(ctrl));
+router.get('/:id',             ctrl.getDecoration.bind(ctrl));
+router.patch('/:id',           ctrl.updateDecoration.bind(ctrl));
+router.delete('/:id',          ctrl.deleteDecoration.bind(ctrl));
 
-export const storeLayoutRoutes = router;
+// ── Lifecycle actions ──────────────────────
+router.post('/:id/publish',    ctrl.publishDecoration.bind(ctrl));
+router.post('/:id/archive',    ctrl.archiveDecoration.bind(ctrl));
+router.post('/:id/duplicate',  ctrl.duplicateDecoration.bind(ctrl));
+
+// ── Component management ───────────────────
+router.post('/:id/components',                                    ctrl.addComponent.bind(ctrl));
+router.put('/:id/components/reorder',                             ctrl.reorderComponents.bind(ctrl));   // PUT before /:componentId
+router.patch('/:id/components/:componentId',                      ctrl.updateComponent.bind(ctrl));
+router.delete('/:id/components/:componentId',                     ctrl.deleteComponent.bind(ctrl));
+router.put('/:id/components/:componentId/products',               ctrl.setComponentProducts.bind(ctrl));
+router.put('/:id/components/:componentId/categories',             ctrl.setComponentCategories.bind(ctrl));
+
+// ── Banner customization ───────────────────
+router.get('/banner-customization',  ctrl.getBannerCustomization.bind(ctrl));
+router.put('/banner-customization',  ctrl.upsertBannerCustomization.bind(ctrl));
+
+// ── Apply template to create a new decoration ─
+router.post('/templates/apply', ctrl.applyTemplate.bind(ctrl));
+
+export const storeDecorationRoutes = router;

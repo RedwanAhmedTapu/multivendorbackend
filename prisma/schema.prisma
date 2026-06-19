@@ -200,7 +200,8 @@ model Vendor {
   products                 Product[]
   storageFiles             StorageFile[]
   bannerCustomization      StoreBannerCustomization?  @relation("VendorBannerCustomization")
-  storeLayout              StoreLayout?               @relation("VendorStoreLayout")
+  decorations   StoreDecoration[]  @relation("VendorDecorations")
+
   user                     User?                      @relation("UserVendor")
   pickupAddress            VendorAddress?
   warehouses               VendorWarehouse[]
@@ -628,7 +629,7 @@ model Category {
   parent              Category?           @relation("CategoryToChildren", fields: [parentId], references: [id], onDelete: Cascade)
   children            Category[]          @relation("CategoryToChildren")
   attributes          CategoryAttribute[]
-  componentCategories ComponentCategory[] @relation("ComponentCategories")
+  decorationCategories  DecorationComponentCategory[]  @relation("DecorationCategories")
   offerCategories     OfferCategory[]
   products            Product[]
   vendorCommissions   VendorCommission[]
@@ -704,7 +705,7 @@ model Product {
   buyXOffers        BuyXGetYOffer[]       @relation("BuyProduct")
   getYOffers        BuyXGetYOffer[]       @relation("GetProduct")
   cart_items        cart_items[]
-  componentProducts ComponentProduct[]
+  decorationProducts  DecorationComponentProduct[]  @relation("DecorationProducts")
   conversations     Conversation[]
   offerProducts     OfferProduct[]
   attributes        ProductAttribute[]
@@ -1417,127 +1418,33 @@ model TermsAndConditions {
   @@map("terms_and_conditions")
 }
 
-model StoreLayout {
-  id         String                 @id @default(cuid())
-  vendorId   String                 @unique
-  isDefault  Boolean                @default(false)
-  thumbnail  String?
-  createdAt  DateTime               @default(now())
-  updatedAt  DateTime               @updatedAt
-  components StoreLayoutComponent[]
-  vendor     Vendor                 @relation("VendorStoreLayout", fields: [vendorId], references: [id], onDelete: Cascade)
+// ============================================================
+// STORE DECORATION
+// Replaces StoreLayout. Each vendor can have multiple named
+// decorations; only one may be PUBLISHED + isDefault at a time.
+// ============================================================
 
-  @@index([vendorId])
-  @@map("store_layouts")
+model StoreDecoration {
+  id          String                @id @default(cuid())
+  vendorId    String
+  name        String
+  slug        String                @unique
+  status      DecorationStatus      @default(DRAFT)
+  isDefault   Boolean               @default(false)
+  thumbnail   String?
+  version     Int                   @default(1)
+  publishedAt DateTime?
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  vendor      Vendor                @relation("VendorDecorations", fields: [vendorId], references: [id], onDelete: Cascade)
+  components  DecorationComponent[]
+
+  @@index([vendorId, status])
+  @@index([vendorId, isDefault])
+  @@index([slug])
+  @@map("store_decorations")
 }
-
-model StoreLayoutComponent {
-  id         String              @id @default(cuid())
-  layoutId   String
-  type       ComponentType
-  sortOrder  Int                 @default(0)
-  createdAt  DateTime            @default(now())
-  updatedAt  DateTime            @updatedAt
-  categories ComponentCategory[]
-  config     ComponentConfig?
-  products   ComponentProduct[]
-  layout     StoreLayout         @relation(fields: [layoutId], references: [id], onDelete: Cascade)
-
-  @@index([layoutId, sortOrder])
-  @@index([type])
-  @@map("store_layout_components")
-}
-
-model ComponentConfig {
-  id                       String               @id @default(cuid())
-  componentId              String               @unique
-  bannerImage              String?
-  bannerBackgroundType     BackgroundType?
-  bannerBackgroundColor    String?
-  showChatButton           Boolean              @default(true)
-  showRating               Boolean              @default(true)
-  showVerifiedBadge        Boolean              @default(true)
-  showFollowers            Boolean              @default(true)
-  showLogo                 Boolean              @default(true)
-  showStoreName            Boolean              @default(true)
-  categoryLayout           CategoryLayout?
-  categoriesPerRow         Int?
-  showCategoryCount        Boolean              @default(true)
-  categorySlideInterval    Int?
-  productsPerRow           Int?
-  showProductPrice         Boolean              @default(true)
-  showProductRating        Boolean              @default(true)
-  showAddToCart            Boolean              @default(true)
-  autoSlide                Boolean              @default(false)
-  slideInterval            Int?
-  bannerType               BannerType?
-  bannerLayout             BannerLayout?
-  bannerHeight             String?
-  bannerImages             Json?
-  countdownBannerImage     String?
-  countdownEndDate         DateTime?
-  timerPosition            TimerPosition?
-  showDays                 Boolean              @default(true)
-  showHours                Boolean              @default(true)
-  showMinutes              Boolean              @default(true)
-  showSeconds              Boolean              @default(true)
-  countdownTitle           String?
-  countdownBackgroundColor String?
-  voucherBannerImage       String?
-  voucherCode              String?
-  voucherTitle             String?
-  voucherDescription       String?
-  voucherBackgroundColor   String?
-  voucherTextColor         String?
-  minOrderAmount           Float?
-  discountAmount           Float?
-  discountPercentage       Float?
-  voucherValidFrom         DateTime?
-  voucherValidTo           DateTime?
-  showVoucherCode          Boolean              @default(true)
-  useDefaultDesign         Boolean              @default(true)
-  customCSS                String?
-  padding                  String?
-  margin                   String?
-  borderRadius             String?
-  boxShadow                String?
-  createdAt                DateTime             @default(now())
-  updatedAt                DateTime             @updatedAt
-  component                StoreLayoutComponent @relation(fields: [componentId], references: [id], onDelete: Cascade)
-
-  @@map("component_configs")
-}
-
-model ComponentProduct {
-  id          String               @id @default(cuid())
-  componentId String
-  productId   String
-  sortOrder   Int                  @default(0)
-  isFeatured  Boolean              @default(false)
-  createdAt   DateTime             @default(now())
-  component   StoreLayoutComponent @relation(fields: [componentId], references: [id], onDelete: Cascade)
-  product     Product              @relation(fields: [productId], references: [id], onDelete: Cascade)
-
-  @@unique([componentId, productId])
-  @@index([componentId, sortOrder])
-  @@map("component_products")
-}
-
-model ComponentCategory {
-  id          String               @id @default(cuid())
-  componentId String
-  categoryId  String
-  sortOrder   Int                  @default(0)
-  isFeatured  Boolean              @default(false)
-  createdAt   DateTime             @default(now())
-  category    Category             @relation("ComponentCategories", fields: [categoryId], references: [id], onDelete: Cascade)
-  component   StoreLayoutComponent @relation(fields: [componentId], references: [id], onDelete: Cascade)
-
-  @@unique([componentId, categoryId])
-  @@index([componentId, sortOrder])
-  @@map("component_categories")
-}
-
 model StoreBannerCustomization {
   id                    String         @id @default(cuid())
   vendorId              String         @unique
@@ -1557,23 +1464,132 @@ model StoreBannerCustomization {
 
   @@map("store_banner_customizations")
 }
+// ============================================================
+// DECORATION COMPONENT
+// A single positioned block inside a decoration (banner,
+// product grid, countdown, etc.).  Type drives the UI renderer.
+// ============================================================
 
-model LayoutTemplate {
-  id         String   @id @default(cuid())
-  name       String
-  thumbnail  String?
-  category   String?
-  structure  Json
-  isPremium  Boolean  @default(false)
-  usageCount Int      @default(0)
-  rating     Float?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+model DecorationComponent {
+  id           String               @id @default(cuid())
+  decorationId String
+  type         ComponentType        // reuses your existing enum
+  sortOrder    Int                  @default(0)
+  isVisible    Boolean              @default(true)
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
 
-  @@index([category])
-  @@map("layout_templates")
+  decoration   StoreDecoration      @relation(fields: [decorationId], references: [id], onDelete: Cascade)
+  config       DecorationComponentConfig?
+  products     DecorationComponentProduct[]
+  categories   DecorationComponentCategory[]
+
+  @@index([decorationId, sortOrder])  // hot: render components in order
+  @@index([decorationId, isVisible])
+  @@index([type])
+  @@map("decoration_components")
 }
 
+// ============================================================
+// DECORATION COMPONENT CONFIG
+// Stores component-specific settings as JSON (flexible) plus
+// the most-queried fields promoted to real columns for speed.
+// ============================================================
+
+model DecorationComponentConfig {
+  id          String               @id @default(cuid())
+  componentId String               @unique
+
+  // ── Promoted scalar columns (indexed / frequently read) ──
+  bannerImage              String?
+  bannerBackgroundType     BackgroundType?
+  bannerBackgroundColor    String?
+  categoryLayout           CategoryLayout?
+  productsPerRow           Int?
+  categoriesPerRow         Int?
+  autoSlide                Boolean          @default(false)
+  slideInterval            Int?             // ms
+  countdownEndDate         DateTime?        // for countdown widgets
+
+  // ── Display toggles (queried together, kept as columns) ──
+  showProductPrice         Boolean          @default(true)
+  showProductRating        Boolean          @default(true)
+  showAddToCart            Boolean          @default(true)
+  showCategoryCount        Boolean          @default(true)
+
+  // ── Everything else in JSON (rare/type-specific fields) ──
+  // Examples: voucherCode, timerPosition, bannerImages[], customCSS
+  // Queried only when the component is already selected — fine as JSON.
+  settings     Json?
+
+  // ── Styling overrides ──
+  customCSS    String?
+  padding      String?
+  margin       String?
+  borderRadius String?
+  boxShadow    String?
+
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+
+  component    DecorationComponent  @relation(fields: [componentId], references: [id], onDelete: Cascade)
+
+  @@index([countdownEndDate]) // for scheduled expiry queries
+  @@map("decoration_component_configs")
+}
+
+// ============================================================
+// COMPONENT ↔ PRODUCT  (many-to-many with metadata)
+// ============================================================
+
+model DecorationComponentProduct {
+  id          String               @id @default(cuid())
+  componentId String
+  productId   String
+  sortOrder   Int                  @default(0)
+  isFeatured  Boolean              @default(false)
+  createdAt   DateTime             @default(now())
+
+  component   DecorationComponent  @relation(fields: [componentId], references: [id], onDelete: Cascade)
+  product     Product              @relation("DecorationProducts", fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([componentId, productId])
+  @@index([componentId, sortOrder])   // hot: render products in order
+  @@index([productId])                // reverse: "which components feature this product"
+  @@map("decoration_component_products")
+}
+
+// ============================================================
+// COMPONENT ↔ CATEGORY  (many-to-many with metadata)
+// ============================================================
+
+model DecorationComponentCategory {
+  id          String               @id @default(cuid())
+  componentId String
+  categoryId  String
+  sortOrder   Int                  @default(0)
+  isFeatured  Boolean              @default(false)
+  createdAt   DateTime             @default(now())
+
+  component   DecorationComponent  @relation(fields: [componentId], references: [id], onDelete: Cascade)
+  category    Category             @relation("DecorationCategories", fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([componentId, categoryId])
+  @@index([componentId, sortOrder])
+  @@index([categoryId])
+  @@map("decoration_component_categories")
+}
+
+// ============================================================
+// ENUM — decoration lifecycle
+// ============================================================
+
+enum DecorationStatus {
+  DRAFT       // being edited, not visible on storefront
+  PUBLISHED   // live on storefront
+  ARCHIVED    // retired but kept for history / re-use
+  SCHEDULED   // publishedAt is in the future
+}
 model SupportTicket {
   id           String          @id @default(cuid())
   userId       String
@@ -2834,6 +2850,30 @@ model FooterElement {
   footerColumn   FooterColumn @relation(fields: [footerColumnId], references: [id], onDelete: Cascade)
 
   @@map("footer_elements")
+}
+model OrderChargeType {
+  id          String   @id @default(cuid())
+  key         String   @unique // e.g. "COD_HANDLING_FEE", "PLATFORM_FEE"
+  label       String   // display name shown to customer
+  type        ChargeValueType // FLAT or PERCENTAGE
+  value       Decimal  // amount or percentage value
+  isActive    Boolean  @default(true)
+  appliesTo   ChargeAppliesTo @default(ALL) // ALL, COD_ONLY, etc.
+  sortOrder   Int      @default(0)
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+enum ChargeValueType {
+  FLAT
+  PERCENTAGE
+}
+
+enum ChargeAppliesTo {
+  ALL
+  COD_ONLY
+  PREPAID_ONLY
 }
 enum UserRole {
   CUSTOMER

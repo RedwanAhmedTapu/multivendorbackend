@@ -1,296 +1,238 @@
-// controllers/storeLayout.controller.ts
-import type { Request, Response } from "express";
+import type { Request, Response } from 'express';
+import { StoreDecorationService } from '../services/storeLayout.service.ts';
 import type {
-  CreateStoreLayoutInput,
+  CreateDecorationInput,
+  UpdateDecorationInput,
   CreateComponentInput,
+  UpdateComponentInput,
   UpdateBannerCustomizationInput,
-} from "../services/storeLayout.service.ts";
-import { StoreLayoutService } from "../services/storeLayout.service.ts";
+} from '../services/storeLayout.service.ts';
 
-const storeLayoutService = new StoreLayoutService();
+const svc = new StoreDecorationService();
 
-export class StoreLayoutController {
-  // Store Layout Methods
-  async createStoreLayout(req: Request, res: Response) {
-    try {
-      const vendorId = req.user.vendorId; // Assuming vendor ID from auth middleware
-      const data: CreateStoreLayoutInput = { ...req.body, vendorId };
+// ─────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────
 
-      const layout = await storeLayoutService.createStoreLayout(data);
-      res.status(201).json({
-        success: true,
-        data: layout,
-      });
-    } catch (error: any) {
-      res.status(400).json({
-        success: false,
-        message: error.message,
-      });
-    }
-  }
+const ok = (res: Response, data: unknown, status = 200) =>
+  res.status(status).json({ success: true, data });
 
-  async getVendorLayouts(req: Request, res: Response) {
-    try {
-      const vendorId = req.user.vendorId;
-      const layouts = await storeLayoutService.getVendorLayouts(vendorId);
+const fail = (res: Response, error: unknown, status = 400) =>
+  res.status(status).json({
+    success: false,
+    message: error instanceof Error ? error.message : 'Unknown error',
+  });
 
-      res.json({
-        success: true,
-        data: layouts,
-      });
-    } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        message: error.message,
-      });
-    }
-  }
+// ─────────────────────────────────────────────
+// CONTROLLER
+// ─────────────────────────────────────────────
 
-  async getStoreLayout(req: Request, res: Response) {
-    try {
-      const { id } = req.params;
-      const layout = await storeLayoutService.getStoreLayout(id);
+export class StoreDecorationController {
 
-      if (!layout) {
-        return res.status(404).json({
-          success: false,
-          message: "Layout not found",
-        });
-      }
+  // ── Decorations ────────────────────────────
 
-      res.json({
-        success: true,
-        data: layout,
-      });
-    } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        message: error.message,
-      });
-    }
-  }
-
-  async setDefaultLayout(req: Request, res: Response) {
+  /** POST /decorations */
+  async createDecoration(req: Request, res: Response) {
     try {
       const vendorId = req.user.vendorId;
-      const { layoutId } = req.body;
-
-      const layout = await storeLayoutService.setDefaultLayout(
-        vendorId,
-        layoutId
-      );
-
-      res.json({
-        success: true,
-        data: layout,
-      });
-    } catch (error: any) {
-      res.status(400).json({
-        success: false,
-        message: error.message,
-      });
-    }
+      const input: CreateDecorationInput = { ...req.body, vendorId };
+      const data = await svc.createDecoration(input);
+      ok(res, data, 201);
+    } catch (e) { fail(res, e); }
   }
 
-  async deleteStoreLayout(req: Request, res: Response) {
+  /** GET /decorations */
+  async listDecorations(req: Request, res: Response) {
     try {
-      const { id } = req.params;
-      await storeLayoutService.deleteStoreLayout(id);
-
-      res.json({
-        success: true,
-        message: "Layout deleted successfully",
-      });
-    } catch (error: any) {
-      res.status(400).json({
-        success: false,
-        message: error.message,
-      });
-    }
+      const vendorId = req.user.vendorId;
+      console.log(vendorId,"v")
+      const data = await svc.getVendorDecorations(vendorId);
+      ok(res, data);
+    } catch (e) { fail(res, e, 500); }
   }
 
-  // Component Methods
+  /** GET /decorations/:id */
+  async getDecoration(req: Request, res: Response) {
+    try {
+      const vendorId = req.user.vendorId;
+      const data = await svc.getDecorationById(req.params.id, vendorId);
+      if (!data) return fail(res, new Error('Decoration not found'), 404);
+      ok(res, data);
+    } catch (e) { fail(res, e, 500); }
+  }
+
+  /** GET /decorations/storefront/:vendorId  — public, no auth */
+  async getStorefront(req: Request, res: Response) {
+    try {
+      const data = await svc.getPublishedDecoration(req.params.vendorId);
+      if (!data) return fail(res, new Error('No published decoration'), 404);
+      ok(res, data);
+    } catch (e) { fail(res, e, 500); }
+  }
+
+  /** PATCH /decorations/:id */
+  async updateDecoration(req: Request, res: Response) {
+    try {
+      const vendorId = req.user.vendorId;
+      const input: UpdateDecorationInput = req.body;
+      const data = await svc.updateDecoration(req.params.id, vendorId, input);
+      ok(res, data);
+    } catch (e) { fail(res, e); }
+  }
+
+  /** POST /decorations/:id/publish */
+  async publishDecoration(req: Request, res: Response) {
+    try {
+      const vendorId = req.user.vendorId;
+      const data = await svc.publishDecoration(req.params.id, vendorId);
+      ok(res, data);
+    } catch (e) { fail(res, e); }
+  }
+
+  /** POST /decorations/:id/archive */
+  async archiveDecoration(req: Request, res: Response) {
+    try {
+      const vendorId = req.user.vendorId;
+      const data = await svc.archiveDecoration(req.params.id, vendorId);
+      ok(res, data);
+    } catch (e) { fail(res, e); }
+  }
+
+  /** DELETE /decorations/:id */
+  async deleteDecoration(req: Request, res: Response) {
+    try {
+      const vendorId = req.user.vendorId;
+      await svc.deleteDecoration(req.params.id, vendorId);
+      ok(res, { message: 'Decoration deleted' });
+    } catch (e) { fail(res, e); }
+  }
+
+  /** POST /decorations/:id/duplicate */
+  async duplicateDecoration(req: Request, res: Response) {
+    try {
+      const vendorId = req.user.vendorId;
+      const { name } = req.body;
+      const data = await svc.duplicateDecoration(req.params.id, vendorId, name);
+      ok(res, data, 201);
+    } catch (e) { fail(res, e); }
+  }
+
+  // ── Components ─────────────────────────────
+
+  /** POST /decorations/:id/components */
   async addComponent(req: Request, res: Response) {
     try {
-      const data: CreateComponentInput = req.body;
-      const component = await storeLayoutService.addComponentToLayout(data);
-
-      res.status(201).json({
-        success: true,
-        data: component,
-      });
-    } catch (error: any) {
-      res.status(400).json({
-        success: false,
-        message: error.message,
-      });
-    }
+      const input: CreateComponentInput = {
+        ...req.body,
+        decorationId: req.params.id,
+      };
+      const data = await svc.addComponent(input);
+      ok(res, data, 201);
+    } catch (e) { fail(res, e); }
   }
 
+  /** PATCH /decorations/:id/components/:componentId */
   async updateComponent(req: Request, res: Response) {
     try {
-      const { componentId } = req.params;
-      const data = req.body;
-
-      const component = await storeLayoutService.updateComponent(
-        componentId,
-        data
+      const input: UpdateComponentInput = req.body;
+      const data = await svc.updateComponent(
+        req.params.componentId,
+        req.params.id,
+        input,
       );
-
-      res.json({
-        success: true,
-        data: component,
-      });
-    } catch (error: any) {
-      res.status(400).json({
-        success: false,
-        message: error.message,
-      });
-    }
+      ok(res, data);
+    } catch (e) { fail(res, e); }
   }
 
+  /** DELETE /decorations/:id/components/:componentId */
   async deleteComponent(req: Request, res: Response) {
     try {
-      const { componentId } = req.params;
-      await storeLayoutService.deleteComponent(componentId);
-
-      res.json({
-        success: true,
-        message: "Component deleted successfully",
-      });
-    } catch (error: any) {
-      res.status(400).json({
-        success: false,
-        message: error.message,
-      });
-    }
+      await svc.deleteComponent(req.params.componentId, req.params.id);
+      ok(res, { message: 'Component deleted' });
+    } catch (e) { fail(res, e); }
   }
 
-  async updateComponentProducts(req: Request, res: Response) {
+  /** PUT /decorations/:id/components/reorder
+   *  body: { orderedIds: string[] }
+   */
+  async reorderComponents(req: Request, res: Response) {
     try {
-      const { componentId } = req.params;
-      const { productIds } = req.body;
-
-      const component = await storeLayoutService.updateComponentProducts(
-        componentId,
-        productIds
-      );
-
-      res.json({
-        success: true,
-        data: component,
-      });
-    } catch (error: any) {
-      res.status(400).json({
-        success: false,
-        message: error.message,
-      });
-    }
+      const { orderedIds } = req.body as { orderedIds: string[] };
+      if (!Array.isArray(orderedIds)) {
+        return fail(res, new Error('orderedIds must be an array'));
+      }
+      await svc.reorderComponents(req.params.id, orderedIds);
+      ok(res, { message: 'Reordered' });
+    } catch (e) { fail(res, e); }
   }
 
-  async updateComponentCategories(req: Request, res: Response) {
+  /** PUT /decorations/:id/components/:componentId/products
+   *  body: { productIds: string[] }
+   */
+  async setComponentProducts(req: Request, res: Response) {
     try {
-      const { componentId } = req.params;
-      const { categoryIds } = req.body;
-
-      const component = await storeLayoutService.updateComponentCategories(
-        componentId,
-        categoryIds
+      const { productIds } = req.body as { productIds: string[] };
+      const data = await svc.setComponentProducts(
+        req.params.componentId,
+        req.params.id,
+        productIds ?? [],
       );
-
-      res.json({
-        success: true,
-        data: component,
-      });
-    } catch (error: any) {
-      res.status(400).json({
-        success: false,
-        message: error.message,
-      });
-    }
+      ok(res, data);
+    } catch (e) { fail(res, e); }
   }
 
-  // Banner Customization Methods
+  /** PUT /decorations/:id/components/:componentId/categories
+   *  body: { categoryIds: string[] }
+   */
+  async setComponentCategories(req: Request, res: Response) {
+    try {
+      const { categoryIds } = req.body as { categoryIds: string[] };
+      const data = await svc.setComponentCategories(
+        req.params.componentId,
+        req.params.id,
+        categoryIds ?? [],
+      );
+      ok(res, data);
+    } catch (e) { fail(res, e); }
+  }
+
+  // ── Banner Customization ───────────────────
+
+  /** GET /decorations/banner-customization */
   async getBannerCustomization(req: Request, res: Response) {
     try {
-      const vendorId = req.user.vendorId;
-      const customization = await storeLayoutService.getBannerCustomization(
-        vendorId
-      );
-
-      res.json({
-        success: true,
-        data: customization,
-      });
-    } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        message: error.message,
-      });
-    }
+      const data = await svc.getBannerCustomization(req.user.vendorId);
+      ok(res, data);
+    } catch (e) { fail(res, e, 500); }
   }
 
-  async updateBannerCustomization(req: Request, res: Response) {
+  /** PUT /decorations/banner-customization */
+  async upsertBannerCustomization(req: Request, res: Response) {
     try {
-      const vendorId = req.user.vendorId;
-      const data: UpdateBannerCustomizationInput = req.body;
-
-      const customization = await storeLayoutService.updateBannerCustomization(
-        vendorId,
-        data
-      );
-
-      res.json({
-        success: true,
-        data: customization,
-      });
-    } catch (error: any) {
-      res.status(400).json({
-        success: false,
-        message: error.message,
-      });
-    }
+      const input: UpdateBannerCustomizationInput = req.body;
+      const data = await svc.upsertBannerCustomization(req.user.vendorId, input);
+      ok(res, data);
+    } catch (e) { fail(res, e); }
   }
 
-  // Template Methods
-  async getTemplates(req: Request, res: Response) {
+  // ── Templates ─────────────────────────────
+
+  /** GET /decorations/templates?category=xyz */
+  async listTemplates(req: Request, res: Response) {
     try {
-      const { category } = req.query;
-      const templates = await storeLayoutService.getLayoutTemplates(
-        category as string
-      );
-
-      res.json({
-        success: true,
-        data: templates,
-      });
-    } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        message: error.message,
-      });
-    }
+      const data = await svc.getLayoutTemplates(req.query.category as string | undefined);
+      ok(res, data);
+    } catch (e) { fail(res, e, 500); }
   }
 
+  /** POST /decorations/templates/apply
+   *  body: { templateId, name? }
+   */
   async applyTemplate(req: Request, res: Response) {
     try {
-      const vendorId = req.user.vendorId;
-      const { templateId } = req.body;
-
-      const layout = await storeLayoutService.applyTemplate(
-        vendorId,
-        templateId
-      );
-
-      res.status(201).json({
-        success: true,
-        data: layout,
-      });
-    } catch (error: any) {
-      res.status(400).json({
-        success: false,
-        message: error.message,
-      });
-    }
+      const { templateId, name } = req.body as { templateId: string; name?: string };
+      const data = await svc.applyTemplate(req.user.vendorId, templateId, name ?? '');
+      ok(res, data, 201);
+    } catch (e) { fail(res, e); }
   }
 }

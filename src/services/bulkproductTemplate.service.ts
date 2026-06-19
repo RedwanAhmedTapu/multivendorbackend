@@ -9,13 +9,8 @@ export interface ColumnConfig {
   width: number;
   type: "TEXT" | "NUMBER" | "BOOLEAN" | "SELECT";
   isRequired: boolean;
-  isVariantAttribute?: boolean; // New flag for variant attributes
+  isVariantAttribute?: boolean;
   values?: string[];
-  validation?: {
-    type: string;
-    formula: string;
-    error: string;
-  };
   description?: string;
 }
 
@@ -32,7 +27,6 @@ export interface TemplateResponse {
 
 const prisma = new PrismaClient();
 
-// Derive __dirname equivalent for ESM
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -50,9 +44,7 @@ export class TemplateService {
                 },
               },
             },
-            orderBy: {
-              sortOrder: "asc",
-            },
+            orderBy: { sortOrder: "asc" },
           },
           children: true,
         },
@@ -60,9 +52,9 @@ export class TemplateService {
 
       if (!category)
         throw new Error(`Category with ID ${categoryId} not found`);
-      if (category.children && category.children.length > 0) {
+      if (category.children && category.children.length > 0)
         throw new Error("Selected category is not a leaf category");
-      }
+
       return category;
     } catch (error) {
       console.error("Error fetching category data:", error);
@@ -92,9 +84,13 @@ export class TemplateService {
       const workbook = new ExcelJS.Workbook();
       workbook.creator = "System";
       workbook.created = new Date();
+
       const worksheet = workbook.addWorksheet(`${category.name} Products`);
 
-      // First section: Basic product info
+      // ─── SECTION 1: Basic product info ───────────────────────────────────
+      // NOTE: Stock quantities are NOT included here. Inventory (WarehouseStock)
+      // is managed through the Purchase Order flow, not bulk product upload.
+      // reorderLevel IS included as it's a static threshold, not a live count.
       const basicInfoColumns: ColumnConfig[] = [
         {
           header: "Variant Group No",
@@ -103,132 +99,144 @@ export class TemplateService {
           type: "NUMBER",
           isRequired: false,
           description:
-            "Same number for products that are variants of each other. Products with the same number will be grouped as variants. Leave empty for standalone products.",
-        },
-        {
-          header: "Availability",
-          key: "availability",
-          width: 20,
-          type: "BOOLEAN",
-          isRequired: true,
-          description:
-            "Indicates if the product is available for purchase (true/false)",
+            "Same number for rows that belong to the same product with variants. " +
+            "Example: Red T-Shirt (Group 1), Blue T-Shirt (Group 1). " +
+            "Leave empty for standalone products with no variants.",
         },
         {
           header: "Product Name",
           key: "name",
-          width: 30,
+          width: 35,
           type: "TEXT",
           isRequired: true,
-          description: "Name of the product. Same for all variants in a group.",
+          description:
+            "Display name of the product. Must be the same for all variant rows in the same group.",
+        },
+        {
+          header: "Product Name (Bangla)",
+          key: "nameBn",
+          width: 35,
+          type: "TEXT",
+          isRequired: false,
+          description: "Optional Bangla translation of the product name.",
         },
         {
           header: "Description",
           key: "description",
-          width: 50,
+          width: 55,
           type: "TEXT",
           isRequired: false,
-          description: "Product description. Same for all variants in a group.",
+          description:
+            "Detailed product description. Same for all variants in a group.",
         },
       ];
 
-      // Third section: Pricing and inventory (after attributes)
-      const pricingInventoryColumns: ColumnConfig[] = [
+      // ─── SECTION 2: Variant-level fields ─────────────────────────────────
+      // price / specialPrice / availability / reorderLevel live on ProductVariant.
+      // Stock (WarehouseStock.quantity) is intentionally excluded — it is
+      // populated when a PurchaseOrder is received, not during product creation.
+      const variantCoreColumns: ColumnConfig[] = [
         {
           header: "SKU",
           key: "sku",
-          width: 20,
+          width: 22,
           type: "TEXT",
           isRequired: true,
           description:
-            "Unique stock keeping unit. Must be unique for each variant.",
+            "Unique Stock Keeping Unit for this specific variant. " +
+            "Must be globally unique. Suggested format: BRAND-PRODUCT-COLOR-SIZE",
+        },
+        {
+          header: "Availability",
+          key: "availability",
+          width: 18,
+          type: "BOOLEAN",
+          isRequired: true,
+          description:
+            "Whether this variant is visible and purchasable on the storefront (true / false).",
         },
         {
           header: "Price",
           key: "price",
-          width: 15,
+          width: 16,
           type: "NUMBER",
           isRequired: true,
           description:
-            "Product price in local currency. Must be greater than special price if special price is provided.",
+            "Regular selling price of this variant. Must be > 0 and greater than Special Price if provided.",
         },
         {
           header: "Special Price",
           key: "specialPrice",
-          width: 15,
+          width: 16,
           type: "NUMBER",
           isRequired: false,
           description:
-            "Product special price in local currency. Must be between 20% and 100% of the original price (i.e., discount cannot exceed 80%).",
+            "Discounted price. Must be between 20 % and 100 % of Price (max 80 % discount). " +
+            "Leave blank if no discount applies.",
         },
         {
-          header: "Stock",
-          key: "stock",
-          width: 10,
+          header: "Reorder Level",
+          key: "reorderLevel",
+          width: 18,
           type: "NUMBER",
-          isRequired: true,
-          description: "Available quantity in stock",
+          isRequired: false,
+          description:
+            "Minimum stock threshold that triggers a low-stock alert. Default is 10 if left blank. " +
+            "NOTE: Actual stock quantities are managed via Purchase Orders, not this template.",
         },
       ];
 
-      // Fourth section: Package and warranty info
+      // ─── SECTION 3: Package & Warranty ───────────────────────────────────
       const packageWarrantyColumns: ColumnConfig[] = [
         {
           header: "Image URLs",
           key: "imageUrls",
-          width: 50,
+          width: 55,
           type: "TEXT",
           isRequired: false,
-          description: "Comma-separated list of image URLs for the product",
-        },
-        {
-          header: "Video URL",
-          key: "videoUrl",
-          width: 50,
-          type: "TEXT",
-          isRequired: false,
-          description: "Video URL for the product",
+          description:
+            "Comma-separated list of publicly accessible image URLs for this variant.",
         },
         {
           header: "Package Weight",
           key: "packageWeight",
-          width: 18,
+          width: 20,
           type: "NUMBER",
           isRequired: true,
-          description: "Weight of the product package",
+          description: "Weight of the packaged product.",
         },
         {
           header: "Package Weight Unit",
           key: "packageWeightUnit",
-          width: 20,
+          width: 22,
           type: "SELECT",
           values: ["KG", "G"],
           isRequired: true,
-          description: "Unit of measurement for package weight",
+          description: "Unit for package weight: KG or G.",
         },
         {
-          header: "Package Length",
+          header: "Package Length (cm)",
           key: "packageLength",
-          width: 18,
+          width: 22,
           type: "NUMBER",
           isRequired: true,
-          description: "Length of the package (cm)",
+          description: "Package length in centimetres.",
         },
         {
-          header: "Package Width",
+          header: "Package Width (cm)",
           key: "packageWidth",
-          width: 18,
+          width: 22,
           type: "NUMBER",
           isRequired: true,
-          description: "Width of the package (cm)",
+          description: "Package width in centimetres.",
         },
         {
-          header: "Package Height",
+          header: "Package Height (cm)",
           key: "packageHeight",
-          width: 18,
+          width: 22,
           type: "NUMBER",
           isRequired: true,
-          description: "Height of the package (cm)",
+          description: "Package height in centimetres.",
         },
         {
           header: "Dangerous Goods",
@@ -237,44 +245,45 @@ export class TemplateService {
           type: "SELECT",
           values: ["NONE", "CONTAINS"],
           isRequired: true,
-          description: "Indicates if product contains dangerous goods",
+          description: "Whether the package contains dangerous / hazardous goods.",
         },
         {
           header: "Warranty Duration",
           key: "warrantyDuration",
-          width: 18,
+          width: 20,
           type: "NUMBER",
           isRequired: false,
-          description: "Duration of warranty",
+          description: "Numeric duration of the warranty (e.g. 12). Leave blank for no warranty.",
         },
         {
           header: "Warranty Unit",
           key: "warrantyUnit",
-          width: 20,
+          width: 18,
           type: "SELECT",
           values: ["DAYS", "MONTHS", "YEARS"],
           isRequired: false,
-          description: "Unit of time for warranty duration",
+          description: "Time unit for the warranty duration.",
         },
         {
           header: "Warranty Type",
           key: "warrantyType",
-          width: 20,
+          width: 28,
           type: "SELECT",
           values: WARRANTY_TYPE_VALUES,
           isRequired: false,
-          description: "Type of warranty offered (e.g., Manufacturer, Seller)",
+          description: "Category of warranty offered.",
         },
         {
           header: "Warranty Policy",
           key: "warrantyPolicy",
-          width: 50,
+          width: 55,
           type: "TEXT",
           isRequired: false,
-          description: "Detailed warranty policy information",
+          description: "Free-text description of the warranty terms.",
         },
-        
       ];
+
+      // ─── Separate category attributes into product-level vs variant-level ─
       const productAttributes: ColumnConfig[] = [];
       const variantAttributes: ColumnConfig[] = [];
 
@@ -285,7 +294,7 @@ export class TemplateService {
         const columnConfig: ColumnConfig = {
           header: attr.attribute.name,
           key: attr.attribute.slug,
-          width: 20,
+          width: 22,
           type: attr.attribute.type,
           values:
             attr.attribute.type === "SELECT"
@@ -293,13 +302,13 @@ export class TemplateService {
               : [],
           isRequired: attr.isRequired,
           isVariantAttribute: isVariantAttr,
-          description: `${attr.attribute.name}${
-            attr.attribute.unit ? ` (${attr.attribute.unit})` : ""
-          }. ${attr.isRequired ? "Required" : "Optional"} field.${
-            isVariantAttr
-              ? " 🔄 VARIANT ATTRIBUTE: Different values create different variants."
-              : " 📦 PRODUCT ATTRIBUTE: Same value for all variants in a group."
-          }`,
+          description:
+            `${attr.attribute.name}` +
+            (attr.attribute.unit ? ` (${attr.attribute.unit})` : "") +
+            `. ${attr.isRequired ? "Required" : "Optional"}.` +
+            (isVariantAttr
+              ? " 🔄 VARIANT ATTRIBUTE — different values create different variants."
+              : " 📦 PRODUCT ATTRIBUTE — same value for all variants in a group."),
         };
 
         if (isVariantAttr) {
@@ -308,168 +317,134 @@ export class TemplateService {
           productAttributes.push(columnConfig);
         }
       });
-     // Option 2: Basic info with description last, then attributes, then rest
-const basicInfoWithoutDescription = basicInfoColumns.filter(col => col.key !== "description");
-const descriptionOnly = basicInfoColumns.find(col => col.key === "description");
 
-const columns = [
-  ...basicInfoWithoutDescription, // Variant Group No, Availability, Product Name
-  descriptionOnly!, // Description
-  ...productAttributes, // Product attributes immediately after description
-  ...variantAttributes, // Variant attributes
-  ...pricingInventoryColumns,
-  ...packageWarrantyColumns,
-];
+      // ─── Assemble final column order ──────────────────────────────────────
+      // Basic info → product attrs → variant attrs → variant core → pkg/warranty
+      const columns: ColumnConfig[] = [
+        ...basicInfoColumns,
+        ...productAttributes,
+        ...variantAttributes,
+        ...variantCoreColumns,
+        ...packageWarrantyColumns,
+      ];
 
-      // Set worksheet columns with * for required fields and 🔄 for variant attributes
+      // ─── Set worksheet columns ────────────────────────────────────────────
       worksheet.columns = columns.map((col) => {
         let header = col.header;
         if (col.isRequired) header += " *";
         if (col.isVariantAttribute) header += " 🔄";
-        return {
-          header,
-          key: col.key,
-          width: col.width,
-        };
+        return { header, key: col.key, width: col.width };
       });
 
-      // Style header row
+      // ─── Style header row ─────────────────────────────────────────────────
       const headerRow = worksheet.getRow(1);
-      headerRow.height = 40;
-      headerRow.alignment = {
-        vertical: "middle",
-        horizontal: "center",
-        wrapText: true,
-      };
+      headerRow.height = 42;
+      headerRow.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
 
-      // Apply different colors for required vs optional, and variant attributes
       columns.forEach((col, index) => {
         const cell = headerRow.getCell(index + 1);
 
-        // Variant attributes: Purple background
         if (col.isVariantAttribute) {
-          cell.fill = {
-            type: "pattern",
-            pattern: "solid",
-            fgColor: { argb: "FF9B59B6" }, // Purple for variant attributes
-          };
-          cell.font = {
-            bold: true,
-            color: { argb: "FFFFFFFF" },
-            size: 11,
-          };
-        }
-        // Required fields: Red background
-        else if (col.isRequired) {
-          cell.fill = {
-            type: "pattern",
-            pattern: "solid",
-            fgColor: { argb: "FFDC3545" }, // Red for required
-          };
-          cell.font = {
-            bold: true,
-            color: { argb: "FFFFFFFF" },
-            size: 11,
-          };
-        }
-        // Optional fields: Blue background
-        else {
-          cell.fill = {
-            type: "pattern",
-            pattern: "solid",
-            fgColor: { argb: "FF4472C4" }, // Blue for optional
-          };
-          cell.font = {
-            bold: true,
-            color: { argb: "FFFFFFFF" },
-            size: 11,
-          };
+          // Purple — variant attribute
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF7B2D8B" } };
+        } else if (col.isRequired) {
+          // Red — required field
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFC0392B" } };
+        } else {
+          // Steel blue — optional field
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF2E75B6" } };
         }
 
+        cell.font = { bold: true, color: { argb: "FFFFFFFF" }, size: 11 };
         cell.border = {
           top: { style: "thin", color: { argb: "FF000000" } },
           left: { style: "thin", color: { argb: "FF000000" } },
           bottom: { style: "thin", color: { argb: "FF000000" } },
           right: { style: "thin", color: { argb: "FF000000" } },
         };
+
+        // ── Tooltip note ──
+        let noteHeader = col.isVariantAttribute
+          ? "🔄 VARIANT ATTRIBUTE"
+          : col.isRequired
+          ? "⚠️ REQUIRED FIELD"
+          : "Optional Field";
+
+        cell.note = {
+          texts: [
+            {
+              text:
+                `${noteHeader}\n\n${col.description}\n\nType: ${col.type}` +
+                (col.values?.length ? `\nOptions: ${col.values.join(", ")}` : ""),
+            },
+          ],
+          margins: { insetmode: "custom", inset: [0.1, 0.1, 0.1, 0.1] },
+        };
       });
 
-      // Add data validation and notes
+      // ─── Data validation (rows 2–1001) ────────────────────────────────────
       columns.forEach((col, index) => {
-        const column = worksheet.getColumn(index + 1);
-        const columnLetter = String.fromCharCode(65 + index); // A, B, C, etc.
+        const colLetter = this.columnIndexToLetter(index);
 
-        // Special validation for Price column
         if (col.key === "price") {
-          for (let rowNum = 2; rowNum <= 1001; rowNum++) {
-            const cell = worksheet.getCell(rowNum, index + 1);
-            const specialPriceCol = columns.findIndex(
-              (c) => c.key === "specialPrice"
-            );
-            const specialPriceColLetter = String.fromCharCode(
-              65 + specialPriceCol
-            );
-
-            // Price must be greater than 0 and if special price exists, must be greater than special price
-            cell.dataValidation = {
+          for (let r = 2; r <= 1001; r++) {
+            const spIdx = columns.findIndex((c) => c.key === "specialPrice");
+            const spLetter = this.columnIndexToLetter(spIdx);
+            worksheet.getCell(r, index + 1).dataValidation = {
               type: "custom",
               allowBlank: false,
               formulae: [
-                `AND(${columnLetter}${rowNum}>0, OR(${specialPriceColLetter}${rowNum}="", ${specialPriceColLetter}${rowNum}=0, ${columnLetter}${rowNum}>${specialPriceColLetter}${rowNum}))`,
+                `AND(${colLetter}${r}>0,OR(${spLetter}${r}="",${spLetter}${r}=0,${colLetter}${r}>${spLetter}${r}))`,
               ],
               showErrorMessage: true,
               errorStyle: "error",
               errorTitle: "Invalid Price",
-              error:
-                "Price must be greater than 0 and greater than Special Price (if provided)",
+              error: "Price must be > 0 and greater than Special Price (if provided).",
             };
           }
-        }
-        // Special validation for Special Price column
-        else if (col.key === "specialPrice") {
-          for (let rowNum = 2; rowNum <= 1001; rowNum++) {
-            const cell = worksheet.getCell(rowNum, index + 1);
-            const priceCol = columns.findIndex((c) => c.key === "price");
-            const priceColLetter = String.fromCharCode(65 + priceCol);
-
-            // Special price must be between 20% and 100% of price (discount max 80%)
-            cell.dataValidation = {
+        } else if (col.key === "specialPrice") {
+          for (let r = 2; r <= 1001; r++) {
+            const priceIdx = columns.findIndex((c) => c.key === "price");
+            const priceLetter = this.columnIndexToLetter(priceIdx);
+            worksheet.getCell(r, index + 1).dataValidation = {
               type: "custom",
               allowBlank: true,
               formulae: [
-                `OR(${columnLetter}${rowNum}="", ${columnLetter}${rowNum}=0, AND(${columnLetter}${rowNum}>=${priceColLetter}${rowNum}*0.2, ${columnLetter}${rowNum}<=${priceColLetter}${rowNum}))`,
+                `OR(${colLetter}${r}="",${colLetter}${r}=0,AND(${colLetter}${r}>=${priceLetter}${r}*0.2,${colLetter}${r}<=${priceLetter}${r}))`,
               ],
               showErrorMessage: true,
               errorStyle: "error",
               errorTitle: "Invalid Special Price",
-              error:
-                "Special Price must be between 20% and 100% of the Price (max 80% discount). Leave empty if no special price.",
+              error: "Special Price must be 20%–100% of Price (max 80% discount).",
             };
           }
-        }
-        // Add data validation for all other rows after header
-        else if (col.type === "SELECT" && col.values && col.values.length > 0) {
-          // Apply validation to first 1000 rows
-          for (let rowNum = 2; rowNum <= 1001; rowNum++) {
-            const cell = worksheet.getCell(rowNum, index + 1);
-            cell.dataValidation = {
+        } else if (col.type === "SELECT" && col.values?.length) {
+          for (let r = 2; r <= 1001; r++) {
+            worksheet.getCell(r, index + 1).dataValidation = {
               type: "list",
               allowBlank: !col.isRequired,
               formulae: [`"${col.values!.join(",")}"`],
               showErrorMessage: true,
               errorStyle: "error",
-              errorTitle: "Invalid Input",
-              error: `Please select from: ${col.values!.join(", ")}`,
+              errorTitle: "Invalid Selection",
+              error: `Choose from: ${col.values!.join(", ")}`,
             };
           }
-        } else if (
-          col.type === "NUMBER" &&
-          col.key !== "price" &&
-          col.key !== "specialPrice"
-        ) {
-          for (let rowNum = 2; rowNum <= 1001; rowNum++) {
-            const cell = worksheet.getCell(rowNum, index + 1);
-            cell.dataValidation = {
+        } else if (col.type === "BOOLEAN") {
+          for (let r = 2; r <= 1001; r++) {
+            worksheet.getCell(r, index + 1).dataValidation = {
+              type: "list",
+              allowBlank: !col.isRequired,
+              formulae: ['"true,false"'],
+              showErrorMessage: true,
+              errorStyle: "error",
+              errorTitle: "Invalid Value",
+              error: "Enter true or false.",
+            };
+          }
+        } else if (col.type === "NUMBER") {
+          for (let r = 2; r <= 1001; r++) {
+            worksheet.getCell(r, index + 1).dataValidation = {
               type: "decimal",
               allowBlank: !col.isRequired,
               operator: "greaterThanOrEqual",
@@ -477,60 +452,37 @@ const columns = [
               showErrorMessage: true,
               errorStyle: "error",
               errorTitle: "Invalid Number",
-              error: "Value must be 0 or greater",
-            };
-          }
-        } else if (col.type === "BOOLEAN") {
-          for (let rowNum = 2; rowNum <= 1001; rowNum++) {
-            const cell = worksheet.getCell(rowNum, index + 1);
-            cell.dataValidation = {
-              type: "list",
-              allowBlank: !col.isRequired,
-              formulae: ['"true,false"'],
-              showErrorMessage: true,
-              errorStyle: "error",
-              errorTitle: "Invalid Input",
-              error: "Please select true or false",
+              error: "Value must be 0 or greater.",
             };
           }
         }
-
-        // Add header note/comment with required and variant indicators
-        const headerCell = worksheet.getCell(1, index + 1);
-        let noteHeader = "";
-        if (col.isVariantAttribute) {
-          noteHeader = "🔄 VARIANT ATTRIBUTE";
-        } else if (col.isRequired) {
-          noteHeader = "⚠️ REQUIRED FIELD";
-        } else {
-          noteHeader = "Optional Field";
-        }
-
-        headerCell.note = {
-          texts: [
-            {
-              text: `${noteHeader}\n\n${col.description}\n\nType: ${col.type}${
-                col.values ? `\nOptions: ${col.values.join(", ")}` : ""
-              }`,
-            },
-          ],
-          margins: {
-            insetmode: "custom",
-            inset: [0.1, 0.1, 0.1, 0.1],
-          },
-        };
       });
 
-      // Add sample data rows demonstrating variant attributes
-      const sampleStandaloneRow: { [key: string]: any } = {
+      // ─── Sample rows ──────────────────────────────────────────────────────
+      const makeBaseRow = () => {
+        const row: Record<string, any> = {};
+        productAttributes.forEach((col) => {
+          row[col.key] =
+            col.type === "SELECT" ? col.values?.[0] ?? ""
+            : col.type === "NUMBER" ? 100
+            : col.type === "BOOLEAN" ? "true"
+            : `Sample ${col.header}`;
+        });
+        return row;
+      };
+
+      const standalone: Record<string, any> = {
+        ...makeBaseRow(),
         variantGroupNo: "",
-        availability: true,
         name: "Example Standalone Product",
-        description: "This is a standalone product without variants",
+        nameBn: "উদাহরণ পণ্য",
+        description: "A product with no variants. Leave Variant Group No blank.",
         sku: "SKU-STANDALONE-001",
-        price: 99.99,
-        specialPrice: 79.99, // 20% discount
-        stock: 50,
+        availability: "true",
+        price: 1200,
+        specialPrice: 960,    // 20% off
+        reorderLevel: 10,
+        imageUrls: "https://example.com/product.jpg",
         packageWeight: 1.5,
         packageWeightUnit: "KG",
         packageLength: 30,
@@ -540,410 +492,200 @@ const columns = [
         warrantyDuration: 12,
         warrantyUnit: "MONTHS",
         warrantyType: "BRAND_WARRANTY",
-        warrantyPolicy: "Standard manufacturer warranty covering defects",
-        imageUrls:
-          "https://example.com/product1.jpg,https://example.com/product1-alt.jpg",
-        videoUrl: "https://example.com/product1-video.mp4",
+        warrantyPolicy: "Standard manufacturer warranty covering manufacturing defects.",
       };
 
-      // Variant example with different variant attribute values
-      const sampleVariant1Row: { [key: string]: any } = {
+      const variant1: Record<string, any> = {
+        ...makeBaseRow(),
         variantGroupNo: 1,
-        availability: true,
-        name: "Example Product with Variants",
-        description: "This product has multiple variants (color/size)",
-        sku: "SKU-VAR1-RED-SMALL",
-        price: 79.99,
-        specialPrice: 63.99, // 20% discount
-        stock: 25,
-        packageWeight: 1.2,
+        name: "Example Product With Variants",
+        nameBn: "ভেরিয়েন্ট পণ্য",
+        description: "Rows 3–4 share Variant Group No 1 — they become variants of one product.",
+        sku: "SKU-EXAMPLE-RED-M",
+        availability: "true",
+        price: 850,
+        specialPrice: "",
+        reorderLevel: 5,
+        imageUrls: "https://example.com/red-m.jpg",
+        packageWeight: 0.8,
         packageWeightUnit: "KG",
-        packageLength: 28,
-        packageWidth: 18,
-        packageHeight: 8,
+        packageLength: 25,
+        packageWidth: 15,
+        packageHeight: 5,
         dangerousGoods: "NONE",
         warrantyDuration: 6,
         warrantyUnit: "MONTHS",
         warrantyType: "SELLER_WARRANTY",
-        warrantyPolicy: "Standard warranty",
-        imageUrls: "https://example.com/variant-red-small.jpg",
-        videoUrl: "",
+        warrantyPolicy: "Seller warranty — contact seller for claims.",
       };
 
-      const sampleVariant2Row: { [key: string]: any } = {
+      const variant2: Record<string, any> = {
+        ...makeBaseRow(),
         variantGroupNo: 1,
-        availability: true,
-        name: "Example Product with Variants",
-        description: "This product has multiple variants (color/size)",
-        sku: "SKU-VAR1-BLUE-LARGE",
-        price: 89.99,
-        specialPrice: 71.99, // 20% discount
-        stock: 30,
-        packageWeight: 1.5,
+        name: "Example Product With Variants",
+        nameBn: "ভেরিয়েন্ট পণ্য",
+        description: "Rows 3–4 share Variant Group No 1 — they become variants of one product.",
+        sku: "SKU-EXAMPLE-BLUE-L",
+        availability: "true",
+        price: 900,
+        specialPrice: 720,    // 20% off
+        reorderLevel: 5,
+        imageUrls: "https://example.com/blue-l.jpg",
+        packageWeight: 0.9,
         packageWeightUnit: "KG",
-        packageLength: 32,
-        packageWidth: 22,
-        packageHeight: 10,
+        packageLength: 27,
+        packageWidth: 16,
+        packageHeight: 6,
         dangerousGoods: "NONE",
         warrantyDuration: 6,
         warrantyUnit: "MONTHS",
         warrantyType: "SELLER_WARRANTY",
-        warrantyPolicy: "Standard warranty",
-        imageUrls: "https://example.com/variant-blue-large.jpg",
-        videoUrl: "",
+        warrantyPolicy: "Seller warranty — contact seller for claims.",
       };
 
-      // Fill product attribute values (same for all variants)
-      productAttributes.forEach((col) => {
-        if (col.type === "SELECT" && col.values && col.values.length > 0) {
-          const value = col.values[0];
-          sampleStandaloneRow[col.key] = value;
-          sampleVariant1Row[col.key] = value; // Same value
-          sampleVariant2Row[col.key] = value; // Same value
-        } else if (col.type === "NUMBER") {
-          sampleStandaloneRow[col.key] = 100;
-          sampleVariant1Row[col.key] = 100; // Same value
-          sampleVariant2Row[col.key] = 100; // Same value
-        } else if (col.type === "BOOLEAN") {
-          sampleStandaloneRow[col.key] = "true";
-          sampleVariant1Row[col.key] = "true"; // Same value
-          sampleVariant2Row[col.key] = "true"; // Same value
-        } else if (col.type === "TEXT") {
-          sampleStandaloneRow[col.key] = `Sample ${col.header}`;
-          sampleVariant1Row[col.key] = `Sample ${col.header}`;
-          sampleVariant2Row[col.key] = `Sample ${col.header}`;
-        }
+      // Assign variant attribute sample values
+      variantAttributes.forEach((col) => {
+        standalone[col.key] = col.values?.[0] ?? (col.type === "NUMBER" ? 100 : "");
+        variant1[col.key] = col.values?.[0] ?? (col.type === "NUMBER" ? 50 : "Value A");
+        variant2[col.key] =
+          col.values && col.values.length > 1
+            ? col.values[1]
+            : col.type === "NUMBER"
+            ? 75
+            : "Value B";
       });
 
-      // Fill variant attribute values (different for each variant)
-      variantAttributes.forEach((col, idx) => {
-        if (col.type === "SELECT" && col.values && col.values.length > 0) {
-          sampleStandaloneRow[col.key] = col.values[0];
-          sampleVariant1Row[col.key] = col.values[0]; // First option
-          sampleVariant2Row[col.key] =
-            col.values.length > 1 ? col.values[1] : col.values[0]; // Second option
-        } else if (col.type === "NUMBER") {
-          sampleStandaloneRow[col.key] = 100;
-          sampleVariant1Row[col.key] = 50; // Different value
-          sampleVariant2Row[col.key] = 75; // Different value
-        } else if (col.type === "BOOLEAN") {
-          sampleStandaloneRow[col.key] = "true";
-          sampleVariant1Row[col.key] = "true";
-          sampleVariant2Row[col.key] = "false"; // Different value
-        } else if (col.type === "TEXT") {
-          sampleStandaloneRow[col.key] = `Sample ${col.header}`;
-          sampleVariant1Row[col.key] = `${col.header} Variant 1`;
-          sampleVariant2Row[col.key] = `${col.header} Variant 2`;
-        }
-      });
+      const row2 = worksheet.addRow(standalone);
+      const row3 = worksheet.addRow(variant1);
+      const row4 = worksheet.addRow(variant2);
 
-      // Fill variant attribute values (different for each variant)
-      variantAttributes.forEach((col, idx) => {
-        if (col.type === "SELECT" && col.values && col.values.length > 0) {
-          sampleStandaloneRow[col.key] = col.values[0];
-          sampleVariant1Row[col.key] = col.values[0]; // First option
-          sampleVariant2Row[col.key] =
-            col.values.length > 1 ? col.values[1] : col.values[0]; // Second option
-        } else if (col.type === "NUMBER") {
-          sampleStandaloneRow[col.key] = 100;
-          sampleVariant1Row[col.key] = 50; // Different value
-          sampleVariant2Row[col.key] = 75; // Different value
-        } else if (col.type === "BOOLEAN") {
-          sampleStandaloneRow[col.key] = "true";
-          sampleVariant1Row[col.key] = "true";
-          sampleVariant2Row[col.key] = "false"; // Different value
-        } else if (col.type === "TEXT") {
-          sampleStandaloneRow[col.key] = `Sample ${col.header}`;
-          sampleVariant1Row[col.key] = `${col.header} Variant 1`;
-          sampleVariant2Row[col.key] = `${col.header} Variant 2`;
-        }
-      });
-
-      // Add sample rows with styling
-      const row2 = worksheet.addRow(sampleStandaloneRow);
-      const row3 = worksheet.addRow(sampleVariant1Row);
-      const row4 = worksheet.addRow(sampleVariant2Row);
-
-      // Style sample rows
       [row2, row3, row4].forEach((row) => {
-        row.fill = {
-          type: "pattern",
-          pattern: "solid",
-          fgColor: { argb: "FFF8F9FA" },
-        };
-        row.font = { color: { argb: "FF6C757D" }, italic: true };
+        row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF5F5F5" } };
+        row.font = { color: { argb: "FF888888" }, italic: true };
+        row.eachCell((cell) => {
+          cell.border = {
+            top: { style: "hair", color: { argb: "FFCCCCCC" } },
+            left: { style: "hair", color: { argb: "FFCCCCCC" } },
+            bottom: { style: "hair", color: { argb: "FFCCCCCC" } },
+            right: { style: "hair", color: { argb: "FFCCCCCC" } },
+          };
+        });
       });
 
-      // Create instructions sheet
-      const instructionsSheet = workbook.addWorksheet("📋 Instructions");
-      instructionsSheet.columns = [
-        { header: "Field Name", key: "field", width: 35 },
-        { header: "Type", key: "type", width: 15 },
-        { header: "Required", key: "required", width: 12 },
-        { header: "Attribute Type", key: "attrType", width: 18 },
-        { header: "Description", key: "description", width: 60 },
-        { header: "Example", key: "example", width: 35 },
+      // Freeze top row
+      worksheet.views = [{ state: "frozen", xSplit: 0, ySplit: 1 }];
+
+      // ─── Instructions sheet ───────────────────────────────────────────────
+      const inst = workbook.addWorksheet("📋 Instructions");
+      inst.columns = [
+        { header: "Column", key: "col", width: 30 },
+        { header: "Type", key: "type", width: 14 },
+        { header: "Required?", key: "req", width: 13 },
+        { header: "Section", key: "section", width: 20 },
+        { header: "Description", key: "desc", width: 65 },
       ];
 
-      // Style instructions header
-      const instHeaderRow = instructionsSheet.getRow(1);
-      instHeaderRow.font = {
-        bold: true,
-        size: 12,
-        color: { argb: "FFFFFFFF" },
-      };
-      instHeaderRow.fill = {
-        type: "pattern",
-        pattern: "solid",
-        fgColor: { argb: "FF28A745" },
-      };
-      instHeaderRow.alignment = { vertical: "middle", horizontal: "center" };
-      instHeaderRow.height = 25;
+      const iHeader = inst.getRow(1);
+      iHeader.font = { bold: true, size: 12, color: { argb: "FFFFFFFF" } };
+      iHeader.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1A5276" } };
+      iHeader.alignment = { vertical: "middle", horizontal: "center" };
+      iHeader.height = 28;
 
-      // Add field descriptions
       columns.forEach((col) => {
-        const exampleValue =
-          col.values?.[0] ||
-          (col.type === "NUMBER"
-            ? col.key.includes("price")
-              ? "99.99"
-              : "10"
-            : col.type === "BOOLEAN"
-            ? "true"
-            : col.key === "sku"
-            ? "SKU-ABC-123"
-            : col.key === "variantGroupNo"
-            ? "1 (or leave empty)"
-            : `Example ${col.header}`);
+        const section = col.isVariantAttribute
+          ? "🔄 Variant Attribute"
+          : productAttributes.some((a) => a.key === col.key)
+          ? "📦 Product Attribute"
+          : variantCoreColumns.some((a) => a.key === col.key)
+          ? "🏷️ Variant Core"
+          : basicInfoColumns.some((a) => a.key === col.key)
+          ? "ℹ️ Basic Info"
+          : "📦 Package / Warranty";
 
-        let fieldHeader = col.header;
-        if (col.isRequired) fieldHeader += " *";
-        if (col.isVariantAttribute) fieldHeader += " 🔄";
-
-        const row = instructionsSheet.addRow({
-          field: fieldHeader,
+        const row = inst.addRow({
+          col: `${col.header}${col.isRequired ? " *" : ""}${col.isVariantAttribute ? " 🔄" : ""}`,
           type: col.type,
-          required: col.isRequired ? "✓ YES" : "○ No",
-          attrType: col.isVariantAttribute
-            ? "🔄 Variant"
-            : col.key === "variantGroupNo" ||
-              col.key === "availability" ||
-              col.key === "name"
-            ? "System"
-            : productAttributes.some((a) => a.key === col.key)
-            ? "📦 Product"
-            : "System",
-          description:
-            col.description ||
-            `Enter the ${col.header.toLowerCase()} for the product`,
-          example: exampleValue,
+          req: col.isRequired ? "✓ YES" : "○ No",
+          section,
+          desc: col.description ?? "",
         });
 
-        // Color code based on type
         if (col.isVariantAttribute) {
-          row.getCell(1).font = { bold: true, color: { argb: "FF9B59B6" } };
-          row.getCell(4).font = { bold: true, color: { argb: "FF9B59B6" } };
-          row.getCell(4).fill = {
-            type: "pattern",
-            pattern: "solid",
-            fgColor: { argb: "FFF3E5F5" },
-          };
+          row.getCell(1).font = { bold: true, color: { argb: "FF7B2D8B" } };
         } else if (col.isRequired) {
-          row.getCell(1).font = { bold: true, color: { argb: "FFDC3545" } };
-          row.getCell(3).font = { bold: true, color: { argb: "FFDC3545" } };
-          row.getCell(3).fill = {
-            type: "pattern",
-            pattern: "solid",
-            fgColor: { argb: "FFFFF3CD" },
-          };
+          row.getCell(1).font = { bold: true, color: { argb: "FFC0392B" } };
+          row.getCell(3).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFF0E0" } };
         }
+
+        row.alignment = { wrapText: true, vertical: "top" };
+        row.height = 40;
       });
 
-      // Add spacing and legend
-      instructionsSheet.addRow([]);
-      instructionsSheet.addRow([]);
+      // Important notes block
+      inst.addRow([]);
+      const noteTitle = inst.addRow(["⚠️  KEY RULES", "", "", "", ""]);
+      noteTitle.font = { bold: true, size: 13 };
+      noteTitle.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFF3CD" } };
 
-      const legendRow = instructionsSheet.addRow([
-        "📌 LEGEND & FIELD TYPES",
-        "",
-        "",
-        "",
-        "",
-        "",
-      ]);
-      legendRow.font = {
-        bold: true,
-        size: 14,
-        color: { argb: "FF000000" },
-      };
-      legendRow.fill = {
-        type: "pattern",
-        pattern: "solid",
-        fgColor: { argb: "FFE7F3FF" },
-      };
-
-      const redHeaderRow = instructionsSheet.addRow([
-        "🔴 Red Headers with *",
-        "= REQUIRED",
-        "",
-        "",
-        "These fields MUST be filled for all products",
-        "",
-      ]);
-      redHeaderRow.getCell(1).fill = {
-        type: "pattern",
-        pattern: "solid",
-        fgColor: { argb: "FFDC3545" },
-      };
-      redHeaderRow.getCell(1).font = {
-        bold: true,
-        color: { argb: "FFFFFFFF" },
-      };
-
-      const blueHeaderRow = instructionsSheet.addRow([
-        "🔵 Blue Headers",
-        "= OPTIONAL",
-        "",
-        "",
-        "These fields can be left empty",
-        "",
-      ]);
-      blueHeaderRow.getCell(1).fill = {
-        type: "pattern",
-        pattern: "solid",
-        fgColor: { argb: "FF4472C4" },
-      };
-      blueHeaderRow.getCell(1).font = {
-        bold: true,
-        color: { argb: "FFFFFFFF" },
-      };
-
-      const purpleHeaderRow = instructionsSheet.addRow([
-        "🟣 Purple Headers with 🔄",
-        "= VARIANT ATTR",
-        "",
-        "",
-        "Different values create different variants (e.g., Color: Red, Blue)",
-        "",
-      ]);
-      purpleHeaderRow.getCell(1).fill = {
-        type: "pattern",
-        pattern: "solid",
-        fgColor: { argb: "FF9B59B6" },
-      };
-      purpleHeaderRow.getCell(1).font = {
-        bold: true,
-        color: { argb: "FFFFFFFF" },
-      };
-
-      instructionsSheet.addRow([]);
-
-      const importantNotesRow = instructionsSheet.addRow([
-        "⚠️ IMPORTANT NOTES",
-        "",
-        "",
-        "",
-        "",
-        "",
-      ]);
-      importantNotesRow.font = {
-        bold: true,
-        size: 14,
-        color: { argb: "FFDC3545" },
-      };
-      importantNotesRow.fill = {
-        type: "pattern",
-        pattern: "solid",
-        fgColor: { argb: "FFFFF3CD" },
-      };
-
-      const notes = [
-        {
-          title: "1️⃣ Variant Attributes (🔄)",
-          desc: 'Fields marked with 🔄 (purple headers) are VARIANT ATTRIBUTES. Different values in these fields create different variants. Example: If "Color" is a variant attribute, Red creates one variant, Blue creates another variant. These must have DIFFERENT values for each variant in the same group.',
-        },
-        {
-          title: "2️⃣ Product Attributes (📦)",
-          desc: "Product-level attributes should have the SAME value for all variants in a group. These describe the overall product, not individual variants. Example: Brand, Material, Country of Origin.",
-        },
-        {
-          title: "3️⃣ Variant Groups",
-          desc: "Use the same Variant Group No for all variants of one product. Example: Red T-Shirt (Group 1), Blue T-Shirt (Group 1), Green T-Shirt (Group 1). Leave empty for standalone products without variants.",
-        },
-        {
-          title: "4️⃣ SKU Requirements",
-          desc: "Each SKU must be UNIQUE across all products and variants. Format: SKU-[PRODUCT]-[VARIANT_ATTRS] (e.g., SKU-TSHIRT-RED-M, SKU-TSHIRT-BLUE-L)",
-        },
-        {
-          title: "5️⃣ Pricing Rules",
-          desc: "Price must be greater than Special Price. Special Price must be between 20% and 100% of Price (maximum 80% discount allowed). Example: If Price = 100, Special Price can be 20-100. Leave Special Price empty if no discount.",
-        },
-        {
-          title: "6️⃣ Required Fields (*)",
-          desc: 'All fields with red headers and asterisks (*) are REQUIRED. Empty required fields will cause import errors. Look for "✓ YES" in the Required column.',
-        },
-        {
-          title: "7️⃣ Price & Stock",
-          desc: "Price and Stock are per variant. Each variant can have different pricing and inventory levels.",
-        },
-        {
-          title: "8️⃣ Images",
-          desc: "You can add variant-specific images. Separate multiple URLs with commas. Product-level images show when no variant is selected.",
-        },
-        {
-          title: "9️⃣ Sample Data",
-          desc: "Rows 2-4 demonstrate: Row 2 = Standalone product. Rows 3-4 = Two variants of the same product (notice same Variant Group No, same product attributes, but different variant attributes).",
-        },
+      const importantNotes = [
+        [
+          "No Stock Quantity Column",
+          "Stock is NOT set here. After uploading products, receive stock via the Purchase Order module → Receive Items. " +
+            "WarehouseStock is created automatically when a PO is received.",
+        ],
+        [
+          "Reorder Level",
+          "This is a static threshold (default 10). When warehouse stock drops below this level, a low-stock alert fires. " +
+            "It does NOT set initial stock.",
+        ],
+        [
+          "Variant Group No",
+          "Rows sharing the same Variant Group No become variants of one product. " +
+            "Leave blank for standalone products. Example: rows with Group 1 → one product with multiple variants.",
+        ],
+        [
+          "Variant Attributes (🔄 Purple)",
+          "These SELECT-type attributes differentiate variants (e.g. Color, Size). " +
+            "Each variant row must have a DIFFERENT combination of variant attribute values within the same group.",
+        ],
+        [
+          "Product Attributes (📦)",
+          "Non-variant attributes describe the overall product. Use the SAME value for all rows in the same group.",
+        ],
+        [
+          "Pricing Rules",
+          "Price > 0 always. Special Price must be 20%–100% of Price (≤ 80% discount). Leave Special Price blank for no discount.",
+        ],
+        [
+          "SKU Uniqueness",
+          "Every SKU must be globally unique across all products and all variants. Duplicates will cause import failure.",
+        ],
       ];
 
-      notes.forEach((note) => {
-        const noteRow = instructionsSheet.addRow([
-          note.title,
-          "",
-          "",
-          "",
-          note.desc,
-          "",
-        ]);
-        noteRow.font = { bold: true };
-        noteRow.getCell(1).fill = {
-          type: "pattern",
-          pattern: "solid",
-          fgColor: { argb: "FFE7F3FF" },
-        };
-        noteRow.getCell(1).alignment = { vertical: "top", wrapText: true };
-        noteRow.getCell(5).alignment = { vertical: "top", wrapText: true };
-        noteRow.height = 60;
+      importantNotes.forEach(([title, desc]) => {
+        const r = inst.addRow([title, "", "", "", desc]);
+        r.getCell(1).font = { bold: true };
+        r.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFE8F4FD" } };
+        r.getCell(5).alignment = { wrapText: true, vertical: "top" };
+        r.height = 55;
       });
 
-      // Ensure templates directory exists
+      // ─── Save file ────────────────────────────────────────────────────────
       const fs = await import("fs");
       const templatesDir = join(__dirname, "..", "templates");
       if (!fs.existsSync(templatesDir)) {
         fs.mkdirSync(templatesDir, { recursive: true });
       }
 
-      // Save file
-      const fileName = `${category.name.replace(
-        /[^a-zA-Z0-9]/g,
-        "_"
-      )}_Product_Template_${Date.now()}.xlsx`;
+      const safeCategory = category.name.replace(/[^a-zA-Z0-9]/g, "_");
+      const fileName = `${safeCategory}_BulkTemplate_${Date.now()}.xlsx`;
       const filePath = join(templatesDir, fileName);
       await workbook.xlsx.writeFile(filePath);
 
-      // Save template record
       const templateRecord = await prisma.categoryTemplate.upsert({
         where: { categoryId },
-        update: {
-          filePath,
-          updatedAt: new Date(),
-        },
-        create: {
-          categoryId,
-          filePath,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        },
+        update: { filePath, updatedAt: new Date() },
+        create: { categoryId, filePath, createdAt: new Date(), updatedAt: new Date() },
       });
 
       return { filePath, templateRecord };
@@ -953,5 +695,17 @@ const columns = [
     } finally {
       await prisma.$disconnect();
     }
+  }
+
+  /** Convert 0-based column index to Excel letter(s): 0→A, 25→Z, 26→AA */
+  private columnIndexToLetter(index: number): string {
+    let letter = "";
+    let n = index + 1;
+    while (n > 0) {
+      const rem = (n - 1) % 26;
+      letter = String.fromCharCode(65 + rem) + letter;
+      n = Math.floor((n - 1) / 26);
+    }
+    return letter;
   }
 }

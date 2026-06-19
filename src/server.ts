@@ -36,8 +36,8 @@ import vendorstorage from "./routes/vendor-storage.routes.ts";
 import filemanger from "./routes/vendor.folder.routes.ts";
 import offerRoutes from "./routes/offers.routes.ts";
 import employeeroutes from "./routes/employee.routes.ts";
-import {storeLayoutRoutes} from "./routes/storeLayout.routes.ts";
 import uploadRoutes from "./routes/upload.routes.ts"; 
+import { storeDecorationRoutes } from "./routes/storeLayout.routes.ts";
 import bulkproducttemplates from "./routes/bulkproductTemplate.routes.ts";
 import categoryFilterRoutes from './routes/categoryFilterRoutes.ts';
 import faqRoutes from './routes/faq.routes.ts'; 
@@ -55,6 +55,7 @@ import adminOrderRoutes from "./routes/admin.order.routes.ts";
 import supplierRoutes      from './routes/supplier.routes.ts';
 import purchaseOrderRoutes from './routes/purchase-order.routes.ts';
 import stockRoutes         from './routes/stock.routes.ts';
+import { orderChargeRoutes } from './routes/orderCharge.routes.ts';
 
 // Fix __dirname in ES Module
 const __filename = fileURLToPath(import.meta.url);
@@ -116,7 +117,7 @@ app.use("/api/vendor-storage",vendorstorage);
 app.use("/api/filemanager",filemanger);
 app.use('/api/offers', offerRoutes);
 app.use('/api/employees', employeeroutes);
-app.use('/api/store-editor', storeLayoutRoutes);
+app.use('/api/store-decoration', storeDecorationRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/bulkproduct-templates', bulkproducttemplates);
 app.use('/api/category-template', categoryTemplate);
@@ -134,6 +135,7 @@ app.use("/api/footer-settings", footerSettingsRoutes);
 app.use('/api/suppliers',        supplierRoutes);
 app.use('/api/purchase-orders',  purchaseOrderRoutes);
 app.use('/api/stock',            stockRoutes);
+app.use('/api/order-charges',      orderChargeRoutes);
 
 // ✅ FIX: Capture the ChatSocket instance, then immediately hand it to the
 //    controller so chatController.chatSocketInstance is never null when an

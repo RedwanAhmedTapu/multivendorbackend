@@ -19,6 +19,7 @@ import * as portalC from "./controllers/agent-portal.controller.ts";
 import * as adminC from "./controllers/agent-admin.controller.ts";
 import * as commissionC from "./controllers/agent-commission.controller.ts";
 import * as walletC from "./controllers/agent-wallet.controller.ts";
+import * as referralC from "./controllers/agent-referral.controller.ts";
 
 // ── /api/agent/auth ──────────────────────────────────────────────────────
 export const agentAuthRouter = Router();
@@ -69,6 +70,9 @@ agentPortalRouter.post("/payout-methods/:id/default", walletC.setDefaultPayoutMe
 agentPortalRouter.get("/withdrawals", walletC.listMyWithdrawals);
 agentPortalRouter.post("/withdrawals", walletC.requestWithdrawal);
 agentPortalRouter.post("/withdrawals/:id/cancel", walletC.cancelMyWithdrawal);
+// Referral Tracking (Phase 8)
+agentPortalRouter.get("/referral", referralC.getReferral);
+agentPortalRouter.get("/referral/vendors", referralC.listReferredVendors);
 
 // ── /api/admin/agents ────────────────────────────────────────────────────
 export const adminAgentRouter = Router();

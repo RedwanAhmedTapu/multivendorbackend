@@ -40,6 +40,7 @@ import {
   resolveAgentCommissionRate,
 } from "./agent-rate.service.ts";
 import { syncAgentWalletSafe } from "./agent-wallet.service.ts";
+import { evaluateBonusesForAgentSafe } from "./agent-bonus.service.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -267,7 +268,11 @@ export async function accrueAgentCommissionForDelivery(
     }
   }
   // Phase 7: credit at once what is already past its hold (holdDays = 0); never throws.
-  if (created) await syncAgentWalletSafe(link.agentId, now);
+  if (created) {
+    await syncAgentWalletSafe(link.agentId, now);
+    // Phase 9: milestone bonuses that this delivery may have unlocked; never throws.
+    await evaluateBonusesForAgentSafe(link.agentId, now);
+  }
   return { status: "DONE", created, existing: done.size };
 }
 

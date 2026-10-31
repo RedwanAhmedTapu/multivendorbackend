@@ -7,7 +7,7 @@
 
 import { agentDb, type AgentTx } from "../agent-db.ts";
 
-export type AuditEntity = "SETTING" | "LEVEL" | "OVERRIDE" | "BONUS_RULE" | "AGENT" | "VENDOR_LINK" | "WITHDRAWAL" | "COMMISSION";
+export type AuditEntity = "SETTING" | "LEVEL" | "OVERRIDE" | "BONUS_RULE" | "AGENT" | "VENDOR_LINK" | "WITHDRAWAL" | "COMMISSION" | "TRAINING" | "WALLET" | "BONUS_AWARD";
 export type AuditAction = "CREATE" | "UPDATE" | "DELETE" | "ACTIVATE" | "DEACTIVATE" | "STATUS" | "RERUN";
 
 /** Who made the change — from the authenticated admin request. */

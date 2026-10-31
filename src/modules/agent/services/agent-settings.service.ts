@@ -46,6 +46,28 @@ const precedenceSchema = z
     if (list[list.length - 1] !== "GLOBAL") ctx.addIssue({ code: "custom", message: "GLOBAL must be last" });
   });
 
+/** Performance score weights (Phase 9): whole percents that must add up to 100. */
+export const PERFORMANCE_FACTORS = ["vendorActivity", "sales", "growth", "satisfaction"] as const;
+export type PerformanceWeights = Record<(typeof PERFORMANCE_FACTORS)[number], number>;
+const weight = (label: string) =>
+  z.number({ error: `${label} weight must be a whole number` }).int({ error: `${label} weight must be a whole number` }).min(0, { error: `${label} weight can't be negative` }).max(100);
+const performanceWeightsSchema = z
+  .object({ vendorActivity: weight("Vendor activity"), sales: weight("Sales"), growth: weight("Growth"), satisfaction: weight("Satisfaction") })
+  .strict()
+  .refine((w) => w.vendorActivity + w.sales + w.growth + w.satisfaction === 100, { error: "The four weights must add up to 100" });
+
+/** Vendor Activity Alert thresholds (Phase 9). */
+export type VendorAlertRules = { inactivityDays: number; lowRatingMax: number; lowStockUnits: number; growthPercent: number; lookbackDays: number };
+const vendorAlertRulesSchema = z
+  .object({
+    inactivityDays: z.number().int().min(1, { error: "Inactivity days must be 1–365" }).max(365, { error: "Inactivity days must be 1–365" }),
+    lowRatingMax: z.number().int().min(1, { error: "Low rating must be 1–5 stars" }).max(5, { error: "Low rating must be 1–5 stars" }),
+    lowStockUnits: z.number().int().min(0, { error: "Low stock must be 0 or more units" }).max(100000),
+    growthPercent: z.number().int().min(1, { error: "Growth change must be 1–1000%" }).max(1000, { error: "Growth change must be 1–1000%" }),
+    lookbackDays: z.number().int().min(1, { error: "Look-back must be 1–90 days" }).max(90, { error: "Look-back must be 1–90 days" }),
+  })
+  .strict();
+
 /** The registry: every setting key, its validator and its admin-page metadata. */
 export const SETTING_DEFINITIONS = {
   defaultCommissionPercent: {
@@ -114,6 +136,20 @@ export const SETTING_DEFINITIONS = {
     kind: "money",
     schema: money({ label: "Auto-approve limit" }),
   },
+  performanceWeights: {
+    group: "performance",
+    label: "Performance score weights",
+    description: "Share of each factor in the 0–100 performance score: vendor activity, sales, growth and customer satisfaction. Must add up to 100. Until saved, agents see \"not configured\".",
+    kind: "weights",
+    schema: performanceWeightsSchema,
+  },
+  vendorAlertRules: {
+    group: "alerts",
+    label: "Vendor activity alert thresholds",
+    description: "When agents are alerted: no new order for N days, reviews at or below N stars, stock at or below N units, and a sales change of N% over the look-back window (compared with the window before).",
+    kind: "alertRules",
+    schema: vendorAlertRulesSchema,
+  },
   registrationRequiresApproval: {
     group: "registration",
     label: "New agent registrations need admin approval",
@@ -139,6 +175,8 @@ export type AgentSettingsValues = {
   enabledPayoutMethods: (typeof PAYOUT_METHODS)[number][] | null;
   autoApproveWithdrawalLimit: string | null;
   registrationRequiresApproval: boolean | null;
+  performanceWeights: PerformanceWeights | null;
+  vendorAlertRules: VendorAlertRules | null;
 };
 
 export type AgentSettingsSnapshot = {
@@ -160,6 +198,8 @@ const EMPTY_VALUES: AgentSettingsValues = {
   enabledPayoutMethods: null,
   autoApproveWithdrawalLimit: null,
   registrationRequiresApproval: null,
+  performanceWeights: null,
+  vendorAlertRules: null,
 };
 
 /** Cross-field rules over a merged settings state. Returns field → message. */

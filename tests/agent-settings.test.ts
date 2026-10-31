@@ -65,7 +65,7 @@ test("valid values are normalized (exact decimals) and saved with one audit row 
   assert.deepEqual(snapshot.values.withdrawalFee, { type: "FLAT", amount: "10.00" });
   assert.equal(snapshot.values.commissionDurationMonths, null);
   assert.ok(!snapshot.missing.includes("commissionDurationMonths"), "a saved null is configured (= lifetime)");
-  assert.equal(snapshot.missing.length, 0);
+  assert.deepEqual([...snapshot.missing].sort(), ["performanceWeights", "vendorAlertRules"], "only the Phase 9 keys are left");
 
   const audits = fake.db.agentConfigAudit.rows;
   assert.equal(audits.length, 10);

@@ -20,6 +20,7 @@ import * as adminC from "./controllers/agent-admin.controller.ts";
 import * as commissionC from "./controllers/agent-commission.controller.ts";
 import * as walletC from "./controllers/agent-wallet.controller.ts";
 import * as referralC from "./controllers/agent-referral.controller.ts";
+import * as growthC from "./controllers/agent-growth.controller.ts";
 
 // ── /api/agent/auth ──────────────────────────────────────────────────────
 export const agentAuthRouter = Router();
@@ -73,6 +74,15 @@ agentPortalRouter.post("/withdrawals/:id/cancel", walletC.cancelMyWithdrawal);
 // Referral Tracking (Phase 8)
 agentPortalRouter.get("/referral", referralC.getReferral);
 agentPortalRouter.get("/referral/vendors", referralC.listReferredVendors);
+// Growth features (Phase 9)
+agentPortalRouter.get("/levels/me", growthC.getMyLevel);
+agentPortalRouter.get("/bonuses/progress", growthC.getBonusProgress);
+agentPortalRouter.get("/bonuses", growthC.getBonusHistory);
+agentPortalRouter.get("/performance", growthC.getPerformance);
+agentPortalRouter.get("/leaderboard", growthC.getLeaderboard);
+agentPortalRouter.get("/alerts", growthC.getAlerts);
+agentPortalRouter.get("/training", growthC.listTraining);
+agentPortalRouter.get("/training/:id", growthC.getTraining);
 
 // ── /api/admin/agents ────────────────────────────────────────────────────
 export const adminAgentRouter = Router();
@@ -110,6 +120,13 @@ adminAgentRouter.post("/withdrawals/:id/approve", walletC.adminApproveWithdrawal
 adminAgentRouter.post("/withdrawals/:id/reject", walletC.adminRejectWithdrawal);
 adminAgentRouter.post("/withdrawals/:id/mark-paid", walletC.adminMarkWithdrawalPaid);
 adminAgentRouter.post("/deliveries/:deliveryId/accrue", walletC.adminRerunAccrual);
+// growth (Phase 9), wallet adjustment and payable report — before "/:id"
+adminAgentRouter.post("/levels/evaluate", growthC.adminEvaluateLevels);
+adminAgentRouter.get("/training", growthC.adminListTraining);
+adminAgentRouter.post("/training", growthC.adminCreateTraining);
+adminAgentRouter.patch("/training/:id", growthC.adminUpdateTraining);
+adminAgentRouter.delete("/training/:id", growthC.adminDeleteTraining);
+adminAgentRouter.get("/reports/payable", growthC.adminPayableReport);
 // agents
 adminAgentRouter.get("/", adminC.listAgents);
 adminAgentRouter.post("/", adminC.createAgent);
@@ -120,3 +137,5 @@ adminAgentRouter.post("/:id/suspend", adminC.suspendAgent);
 adminAgentRouter.post("/:id/reactivate", adminC.reactivateAgent);
 adminAgentRouter.post("/:id/deactivate", adminC.deactivateAgent);
 adminAgentRouter.post("/:id/vendors", adminC.assignVendor);
+adminAgentRouter.get("/:id/wallet", growthC.adminGetAgentWallet);
+adminAgentRouter.post("/:id/wallet/adjustments", growthC.adminAdjustAgentWallet);

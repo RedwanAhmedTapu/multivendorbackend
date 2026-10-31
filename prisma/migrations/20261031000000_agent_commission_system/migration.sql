@@ -511,6 +511,18 @@ ALTER TABLE "public"."agent_withdrawals" ADD CONSTRAINT "agent_withdrawals_payou
 -- ─────────────────────────────────────────────────────────────────────────
 -- Constraints Prisma cannot express (raw SQL, same technique as
 -- 20261008020000_platform_courier_credential_unique).
+--
+-- WARNING — INVISIBLE TO PRISMA. schema.prisma cannot describe the partial
+-- unique indexes or the CHECK constraints below, so `prisma migrate dev` /
+-- `prisma migrate diff` may propose `DROP INDEX` for:
+--   agent_vendor_links_one_open_per_vendor
+--   agent_overrides_one_active_vendor
+--   agent_overrides_one_active_agent
+--   agent_overrides_one_active_category
+-- NEVER accept such a DROP: these indexes are the database-level guarantee
+-- of "one open link per vendor" and "one active override per target" that
+-- the services rely on under concurrency. Delete those lines from any
+-- generated migration before applying it. See docs/agent-system-plan.md §9.
 -- ─────────────────────────────────────────────────────────────────────────
 
 -- One OPEN agent link per vendor (history rows have endedAt set).

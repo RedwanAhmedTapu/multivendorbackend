@@ -17,6 +17,7 @@ import { authenticateAgent } from "./middlewares/agent-auth.middleware.ts";
 import * as authC from "./controllers/agent-auth.controller.ts";
 import * as portalC from "./controllers/agent-portal.controller.ts";
 import * as adminC from "./controllers/agent-admin.controller.ts";
+import * as commissionC from "./controllers/agent-commission.controller.ts";
 
 // ── /api/agent/auth ──────────────────────────────────────────────────────
 export const agentAuthRouter = Router();
@@ -51,6 +52,11 @@ agentPortalRouter.get("/products", portalC.listProducts);
 agentPortalRouter.get("/reviews", portalC.listReviews);
 agentPortalRouter.get("/vendor-performance", portalC.vendorPerformance);
 agentPortalRouter.get("/analytics/insights", portalC.analyticsInsights);
+// Commission Dashboard (Phase 6) — always the signed-in agent's own rows.
+agentPortalRouter.get("/commissions/summary", commissionC.commissionSummary);
+agentPortalRouter.get("/commissions/trend", commissionC.commissionEarningsTrend);
+agentPortalRouter.get("/commissions/export", commissionC.exportMyCommissions);
+agentPortalRouter.get("/commissions", commissionC.listMyCommissions);
 
 // ── /api/admin/agents ────────────────────────────────────────────────────
 export const adminAgentRouter = Router();
@@ -78,6 +84,9 @@ adminAgentRouter.get("/lookup/vendors", adminC.lookupVendors);
 adminAgentRouter.get("/lookup/categories", adminC.lookupCategories);
 adminAgentRouter.get("/lookup/agents", adminC.lookupAgents);
 adminAgentRouter.post("/vendor-links/:linkId/end", adminC.endVendorLink);
+// commissions (Phase 6), registered before "/:id"
+adminAgentRouter.get("/commissions", commissionC.adminListCommissions);
+adminAgentRouter.get("/commissions/export", commissionC.adminExportCommissions);
 // agents
 adminAgentRouter.get("/", adminC.listAgents);
 adminAgentRouter.post("/", adminC.createAgent);

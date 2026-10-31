@@ -63,10 +63,35 @@ test("registration follows the admin setting registrationRequiresApproval", asyn
   assert.equal((await register({ email: "b@x.com", phone: "01811223344" })).agent.status, "PENDING");
 });
 
-test("duplicate email / phone → 409", async () => {
+test("duplicate email / phone: nothing is created and nothing is revealed (no 409)", async () => {
   await register();
-  await assert.rejects(register({ phone: "01911223344" }), (e: any) => e.statusCode === 409 && e.code === "EMAIL_TAKEN");
-  await assert.rejects(register({ email: "c@x.com" }), (e: any) => e.statusCode === 409 && e.code === "PHONE_TAKEN");
+  const before = fake.db.agent.rows.length;
+  assert.deepEqual(await register({ phone: "01911223344" }), { agent: null, requiresApproval: true }, "email taken");
+  assert.deepEqual(await register({ email: "c@x.com" }), { agent: null, requiresApproval: true }, "phone taken");
+  assert.equal(fake.db.agent.rows.length, before, "no second row");
+  assert.equal(fake.db.agent.rows[0].name, "Rahim Uddin", "existing agent untouched");
+});
+
+test("register endpoint: a new and an already-registered email get the identical response", async () => {
+  const { register: registerHandler } = await import("../src/modules/agent/controllers/agent-auth.controller.ts");
+  const call = async (body: Record<string, unknown>) => {
+    const res: any = { statusCode: 200, body: undefined, status(c: number) { this.statusCode = c; return this; }, json(b: unknown) { this.body = b; return this; } };
+    await new Promise<void>((resolve, reject) => {
+      const done = res.json.bind(res);
+      res.json = (b: unknown) => (done(b), resolve(), res);
+      Promise.resolve(registerHandler({ body, headers: {}, ip: "127.0.0.1" } as any, res, reject as any)).catch(reject);
+    });
+    return { status: res.statusCode, body: res.body };
+  };
+  const body = { name: "Rahim Uddin", email: "rahim@example.com", phone: "01711223344", password: "secret123" };
+  const fresh = await call(body);
+  const again = await call(body);
+  const phoneOnly = await call({ ...body, email: "other@example.com" });
+  assert.equal(fresh.status, 202);
+  assert.deepEqual(again, fresh, "same status and body for an existing email");
+  assert.deepEqual(phoneOnly, fresh, "same status and body for an existing phone");
+  assert.ok(!JSON.stringify(fresh.body).includes("rahim@example.com"), "no account data echoed");
+  assert.equal(fake.db.agent.rows.length, 1);
 });
 
 test("validation: weak password, bad phone, bad email are rejected", () => {

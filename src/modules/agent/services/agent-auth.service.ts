@@ -81,22 +81,39 @@ export async function hashAgentPassword(password: string): Promise<string> {
   return bcrypt.hash(password, BCRYPT_ROUNDS);
 }
 
-/** Self-registration. Status follows the admin setting registrationRequiresApproval. */
+/**
+ * Self-registration. Status follows the admin setting registrationRequiresApproval.
+ *
+ * Enumeration-safe: when the email or phone already belongs to an agent, no
+ * row is created and the caller gets the same result shape (agent = null) —
+ * the HTTP response is identical either way. The password is hashed first in
+ * both cases so the response time doesn't reveal it either. (Admin-created
+ * agents keep the explicit 409: the admin needs to know.)
+ */
 export async function registerAgent(input: { name: string; email: string; phone?: string; password: string }) {
-  await assertIdentityFree(input.email, input.phone);
+  const passwordHash = await hashAgentPassword(input.password);
   const requiresApproval = await registrationRequiresApproval();
-  const agent = await createAgentRow(
-    agentDb.prisma,
-    {
-      name: input.name,
-      email: input.email,
-      phone: input.phone ?? null,
-      passwordHash: await hashAgentPassword(input.password),
-      status: requiresApproval ? "PENDING" : "ACTIVE",
-    },
-    AGENT_PUBLIC_SELECT,
-  );
-  return { agent, requiresApproval };
+  try {
+    await assertIdentityFree(input.email, input.phone);
+    const agent = await createAgentRow(
+      agentDb.prisma,
+      {
+        name: input.name,
+        email: input.email,
+        phone: input.phone ?? null,
+        passwordHash,
+        status: requiresApproval ? "PENDING" : "ACTIVE",
+      },
+      AGENT_PUBLIC_SELECT,
+    );
+    return { agent, requiresApproval };
+  } catch (err) {
+    // Already registered (checked, or lost a concurrent insert on the unique key).
+    if (err instanceof AgentError && (err.code === "EMAIL_TAKEN" || err.code === "PHONE_TAKEN")) {
+      return { agent: null, requiresApproval };
+    }
+    throw err;
+  }
 }
 
 /**

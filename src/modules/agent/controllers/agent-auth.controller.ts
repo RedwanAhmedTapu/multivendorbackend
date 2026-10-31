@@ -47,17 +47,18 @@ const readRefreshCookie = (req: Request): string | undefined => {
 export const register = handle(async (req, res) => {
   getAgentAuthConfig();
   const data = agentRegisterSchema.parse(req.body);
-  const { agent, requiresApproval } = await auth.registerAgent(data);
+  // Same status and body whether or not the email/phone was already
+  // registered, so the endpoint can't be used to discover accounts.
+  const { requiresApproval } = await auth.registerAgent(data);
   ok(
     res,
     {
-      agent,
       message: requiresApproval
-        ? "Registration received. You can sign in once an admin approves your account."
-        : "Registration complete. You can sign in now.",
+        ? "Thanks — if these details aren't already registered, your account has been created and is waiting for admin approval."
+        : "Thanks — if these details aren't already registered, your account has been created and you can sign in now.",
     },
     undefined,
-    201,
+    202,
   );
 });
 

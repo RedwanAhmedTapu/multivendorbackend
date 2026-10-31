@@ -18,6 +18,7 @@ import * as authC from "./controllers/agent-auth.controller.ts";
 import * as portalC from "./controllers/agent-portal.controller.ts";
 import * as adminC from "./controllers/agent-admin.controller.ts";
 import * as commissionC from "./controllers/agent-commission.controller.ts";
+import * as walletC from "./controllers/agent-wallet.controller.ts";
 
 // ── /api/agent/auth ──────────────────────────────────────────────────────
 export const agentAuthRouter = Router();
@@ -57,6 +58,17 @@ agentPortalRouter.get("/commissions/summary", commissionC.commissionSummary);
 agentPortalRouter.get("/commissions/trend", commissionC.commissionEarningsTrend);
 agentPortalRouter.get("/commissions/export", commissionC.exportMyCommissions);
 agentPortalRouter.get("/commissions", commissionC.listMyCommissions);
+// Wallet, payout methods and withdrawals (Phase 7) — always the signed-in agent's own.
+agentPortalRouter.get("/wallet", walletC.getWallet);
+agentPortalRouter.get("/wallet/transactions", walletC.listTransactions);
+agentPortalRouter.get("/payout-methods", walletC.listPayoutMethods);
+agentPortalRouter.post("/payout-methods", walletC.createPayoutMethod);
+agentPortalRouter.patch("/payout-methods/:id", walletC.updatePayoutMethod);
+agentPortalRouter.delete("/payout-methods/:id", walletC.deletePayoutMethod);
+agentPortalRouter.post("/payout-methods/:id/default", walletC.setDefaultPayoutMethod);
+agentPortalRouter.get("/withdrawals", walletC.listMyWithdrawals);
+agentPortalRouter.post("/withdrawals", walletC.requestWithdrawal);
+agentPortalRouter.post("/withdrawals/:id/cancel", walletC.cancelMyWithdrawal);
 
 // ── /api/admin/agents ────────────────────────────────────────────────────
 export const adminAgentRouter = Router();
@@ -87,6 +99,13 @@ adminAgentRouter.post("/vendor-links/:linkId/end", adminC.endVendorLink);
 // commissions (Phase 6), registered before "/:id"
 adminAgentRouter.get("/commissions", commissionC.adminListCommissions);
 adminAgentRouter.get("/commissions/export", commissionC.adminExportCommissions);
+// withdrawals and accrual re-run (Phase 7), registered before "/:id"
+adminAgentRouter.get("/withdrawals", walletC.adminListWithdrawals);
+adminAgentRouter.get("/withdrawals/:id", walletC.adminGetWithdrawal);
+adminAgentRouter.post("/withdrawals/:id/approve", walletC.adminApproveWithdrawal);
+adminAgentRouter.post("/withdrawals/:id/reject", walletC.adminRejectWithdrawal);
+adminAgentRouter.post("/withdrawals/:id/mark-paid", walletC.adminMarkWithdrawalPaid);
+adminAgentRouter.post("/deliveries/:deliveryId/accrue", walletC.adminRerunAccrual);
 // agents
 adminAgentRouter.get("/", adminC.listAgents);
 adminAgentRouter.post("/", adminC.createAgent);

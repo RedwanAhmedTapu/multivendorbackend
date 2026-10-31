@@ -7,8 +7,8 @@
 
 import { agentDb, type AgentTx } from "../agent-db.ts";
 
-export type AuditEntity = "SETTING" | "LEVEL" | "OVERRIDE" | "BONUS_RULE" | "AGENT" | "VENDOR_LINK";
-export type AuditAction = "CREATE" | "UPDATE" | "DELETE" | "ACTIVATE" | "DEACTIVATE" | "STATUS";
+export type AuditEntity = "SETTING" | "LEVEL" | "OVERRIDE" | "BONUS_RULE" | "AGENT" | "VENDOR_LINK" | "WITHDRAWAL" | "COMMISSION";
+export type AuditAction = "CREATE" | "UPDATE" | "DELETE" | "ACTIVATE" | "DEACTIVATE" | "STATUS" | "RERUN";
 
 /** Who made the change — from the authenticated admin request. */
 export type AdminActor = {
@@ -38,9 +38,11 @@ export async function writeConfigAudit(
 ): Promise<void> {
   await tx.agentConfigAudit.create({
     data: {
-      entity: entry.entity,
+      // WITHDRAWAL / COMMISSION / RERUN come from migration 20261101000000; the
+      // casts keep this compiling against a client generated before it.
+      entity: entry.entity as any,
       entityId: entry.entityId,
-      action: entry.action,
+      action: entry.action as any,
       oldValue: entry.oldValue === undefined || entry.oldValue === null ? undefined : auditJson(entry.oldValue),
       newValue: entry.newValue === undefined || entry.newValue === null ? undefined : auditJson(entry.newValue),
       actorUserId: entry.actor.userId,

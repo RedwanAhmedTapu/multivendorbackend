@@ -164,7 +164,7 @@ export const vendorLinkAssignSchema = z
   .strict();
 
 export const auditListQuery = z.object({
-  entity: z.enum(["SETTING", "LEVEL", "OVERRIDE", "BONUS_RULE", "AGENT", "VENDOR_LINK"]).optional(),
+  entity: z.enum(["SETTING", "LEVEL", "OVERRIDE", "BONUS_RULE", "AGENT", "VENDOR_LINK", "WITHDRAWAL", "COMMISSION"]).optional(),
   entityId: idSchema.optional(),
   ...pageQuery,
 });

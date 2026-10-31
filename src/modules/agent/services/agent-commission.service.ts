@@ -13,7 +13,9 @@
 //   C4  earned on DELIVERED, per consignment (deliveryId = CourierOrder.id),
 //       using the consignment's line scope; withdrawable after holdDays.
 //   C5  reversed when a refund completes with a confirmed return
-//       (consumeVendorReturnsForRefund). Wallet effects are Phase 7.
+//       (consumeVendorReturnsForRefund). The wallet (Phase 7,
+//       agent-wallet.service.ts) credits a commission once it clears and
+//       debits reversals of credited ones; both hooks sync it afterwards.
 //   C6  the agent is the one whose link was open when the ORDER WAS PLACED,
 //       within commissionDurationMonths of the link start (null = lifetime).
 //   C7  single level. C12 POS sales never reach this code.
@@ -37,6 +39,7 @@ import {
   loadRateInputs,
   resolveAgentCommissionRate,
 } from "./agent-rate.service.ts";
+import { syncAgentWalletSafe } from "./agent-wallet.service.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -263,6 +266,8 @@ export async function accrueAgentCommissionForDelivery(
       throw err;
     }
   }
+  // Phase 7: credit at once what is already past its hold (holdDays = 0); never throws.
+  if (created) await syncAgentWalletSafe(link.agentId, now);
   return { status: "DONE", created, existing: done.size };
 }
 
@@ -315,7 +320,7 @@ export type ReversalResult = { reversedRows: number; reversedQuantity: number; r
  * (§5.2). Per returned line, units are taken from that line's commission rows
  * oldest first, never more than was earned. Idempotent per (commission, return).
  */
-export async function reverseAgentCommissionForReturn(vendorReturnId: string): Promise<ReversalResult> {
+export async function reverseAgentCommissionForReturn(vendorReturnId: string, now: Date = new Date()): Promise<ReversalResult> {
   const db = agentDb.prisma as any;
   const vr = await db.vendorReturn.findUnique({
     where: { id: vendorReturnId },
@@ -326,12 +331,13 @@ export async function reverseAgentCommissionForReturn(vendorReturnId: string): P
   let reversedRows = 0;
   let reversedQuantity = 0;
   let total = new Decimal(0);
+  const agentIds = new Set<string>();
   for (const ri of vr.items as Array<{ orderItemId: string; quantity: number }>) {
     let remaining = ri.quantity;
     const rows = await db.agentCommission.findMany({
       where: { orderItemId: ri.orderItemId },
       orderBy: { earnedAt: "asc" },
-      select: { id: true, earnedAt: true },
+      select: { id: true, earnedAt: true, agentId: true },
     });
     rows.sort((a: any, b: any) => a.earnedAt.getTime() - b.earnedAt.getTime());
     const already = await db.agentCommissionReversal.findMany({
@@ -341,7 +347,7 @@ export async function reverseAgentCommissionForReturn(vendorReturnId: string): P
     const alreadyBy = new Map(already.map((a: any) => [a.commissionId, a.quantity as number]));
     for (const a of already) remaining -= a.quantity; // re-run: those units are done
 
-    for (const { id } of rows) {
+    for (const { id, agentId } of rows) {
       if (remaining <= 0) break;
       if (alreadyBy.has(id)) continue;
       for (let attempt = 1; ; attempt++) {
@@ -367,6 +373,7 @@ export async function reverseAgentCommissionForReturn(vendorReturnId: string): P
             return { take, amount };
           });
           if (out) {
+            agentIds.add(agentId);
             remaining -= out.take;
             reversedRows += 1;
             reversedQuantity += out.take;
@@ -381,6 +388,8 @@ export async function reverseAgentCommissionForReturn(vendorReturnId: string): P
       }
     }
   }
+  // Phase 7: debit reversals of already-credited commissions now; never throws.
+  for (const agentId of agentIds) await syncAgentWalletSafe(agentId, now);
   return { reversedRows, reversedQuantity, reversedAmount: total.toFixed(2) };
 }
 

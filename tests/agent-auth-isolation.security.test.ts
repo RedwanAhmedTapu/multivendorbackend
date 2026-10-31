@@ -149,7 +149,7 @@ test("agent auth is disabled (503) when the agent secret is missing, short, or r
   process.env.ACCESS_TOKEN_SECRET = userSecret;
 });
 
-test("every /api/admin/agents route is ADMIN-only (vendor staff, vendors, customers, anonymous refused)", async () => {
+test("every /api/admin/agents route: ADMIN passes; staff without agentManagement, vendors, customers, anonymous refused", async () => {
   const routes = (adminAgentRouter as any).stack.filter((l: any) => l.route);
   assert.ok(routes.length >= 25, "admin routes registered");
   for (const layer of routes) {
@@ -160,6 +160,30 @@ test("every /api/admin/agents route is ADMIN-only (vendor staff, vendors, custom
       const expected = who === "ADMIN" ? "controller" : who === "ANONYMOUS" ? "401" : "403";
       assert.equal(got, expected, `${method.toUpperCase()} ${path} as ${who}`);
     }
+  }
+});
+
+test("agentManagement: admin-side staff holding it pass every admin agent route; vendor staff holding it are still refused", async () => {
+  const { PEOPLE } = await import("./support/phase1-auth.ts");
+  const adminStaff = PEOPLE.ADMIN_EMP_WITH.employee.permissions as Record<string, unknown>;
+  const vendorStaff = PEOPLE.VENDOR_EMP_WITH.employee.permissions as Record<string, unknown>;
+  adminStaff.agentManagement = true;
+  vendorStaff.agentManagement = true;
+  try {
+    const routes = (adminAgentRouter as any).stack.filter((l: any) => l.route);
+    for (const layer of routes) {
+      const path = layer.route.path;
+      const method = Object.keys(layer.route.methods)[0];
+      assert.equal(await outcome(adminAgentRouter, "ADMIN_EMP_WITH", method, path), "controller", `${method.toUpperCase()} ${path} as admin staff with agentManagement`);
+      assert.equal(await outcome(adminAgentRouter, "VENDOR_EMP_WITH", method, path), "403", `${method.toUpperCase()} ${path} as vendor staff with agentManagement`);
+      assert.equal(await outcome(adminAgentRouter, "ADMIN", method, path), "controller", `${method.toUpperCase()} ${path} as ADMIN`);
+    }
+    // Revocation bites on the next request (permissions are re-read).
+    delete adminStaff.agentManagement;
+    assert.equal(await outcome(adminAgentRouter, "ADMIN_EMP_WITH", "get", "/settings"), "403", "revoked");
+  } finally {
+    delete adminStaff.agentManagement;
+    delete vendorStaff.agentManagement;
   }
 });
 
@@ -189,4 +213,12 @@ test("authenticated agent-auth endpoints are gated; public ones are not", async 
     if (gated.includes(layer.route.path)) assert.ok(handles.includes(authenticateAgent), `${layer.route.path} gated`);
     if (publicPaths.includes(layer.route.path)) assert.ok(!handles.includes(authenticateAgent), `${layer.route.path} public`);
   }
+});
+
+test("agentManagement is an admin-only grant: an ADMIN may grant it, a VENDOR owner may not", async () => {
+  const { validatePermissionPatch, ADMIN_ONLY_PERMISSION_KEYS, KNOWN_PERMISSION_KEYS } = await import("../src/middlewares/permission.middleware.ts");
+  assert.ok(KNOWN_PERMISSION_KEYS.includes("agentManagement"), "known key");
+  assert.ok((ADMIN_ONLY_PERMISSION_KEYS as readonly string[]).includes("agentManagement"), "admin-only");
+  assert.deepEqual(validatePermissionPatch({ agentManagement: true }, "ADMIN"), { ok: true });
+  assert.equal((validatePermissionPatch({ agentManagement: true }, "VENDOR") as any).status, 403);
 });

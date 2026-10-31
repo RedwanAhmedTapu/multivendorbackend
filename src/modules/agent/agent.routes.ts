@@ -3,14 +3,15 @@
 // Three routers, mounted in server.ts:
 //   /api/agent/auth   agentAuthRouter    public auth + session endpoints
 //   /api/agent        agentPortalRouter  authenticateAgent on EVERY route
-//   /api/admin/agents adminAgentRouter   authenticateUser + ADMIN + no vendor staff
+//   /api/admin/agents adminAgentRouter   authenticateUser + (ADMIN, or admin-side staff
+//                                        holding agentManagement) — never vendor staff
 //
 // Agent tokens never pass authenticateUser and user/admin tokens never pass
 // authenticateAgent (different secret and audience) — see tests/agent-*.test.ts.
 
 import { Router } from "express";
 import { authenticateUser, authorizeRoles } from "../../middlewares/auth.middleware.ts";
-import { blockVendorEmployees } from "../../middlewares/permission.middleware.ts";
+import { blockVendorEmployees, requirePermission } from "../../middlewares/permission.middleware.ts";
 import { authGeneralRateLimiter, loginRateLimiter } from "../../middlewares/rateLimit.middleware.ts";
 import { authenticateAgent } from "./middlewares/agent-auth.middleware.ts";
 import * as authC from "./controllers/agent-auth.controller.ts";
@@ -53,7 +54,10 @@ agentPortalRouter.get("/analytics/insights", portalC.analyticsInsights);
 
 // ── /api/admin/agents ────────────────────────────────────────────────────
 export const adminAgentRouter = Router();
-adminAgentRouter.use(authenticateUser, authorizeRoles("ADMIN"), blockVendorEmployees);
+// Same gate as the POS-subscription admin routes: ADMIN passes; an EMPLOYEE must
+// be admin-side (blockVendorEmployees) and hold agentManagement (re-read from
+// the DB on every request by requirePermission).
+adminAgentRouter.use(authenticateUser, authorizeRoles("ADMIN", "EMPLOYEE"), blockVendorEmployees, requirePermission("agentManagement"));
 // configuration (registered before "/:id" so the paths can't be shadowed)
 adminAgentRouter.get("/settings", adminC.getSettings);
 adminAgentRouter.patch("/settings", adminC.patchSettings);

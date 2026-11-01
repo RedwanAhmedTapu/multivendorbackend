@@ -2,7 +2,7 @@
 //
 // P10 — /api/agent/chat/* (authenticateAgent: agent tokens only) and the staff
 // list under /api/admin/agents/chat (site tokens: ADMIN or agentManagement).
-// Every route answers 404 while AGENT_CHAT_ENABLED is off. The agent identity
+// Every route answers 404 when the AGENT_CHAT_ENABLED kill switch is "0" / "false". The agent identity
 // always comes from req.agent; site users keep using the existing /api/chat
 // routes for reading and replying (same services, same tables).
 
@@ -18,7 +18,7 @@ import { AGENT_CHAT_LIMITS, MODERATION_NOTICE, agentChatEnabled } from "./agent-
 import { agentConversationStates } from "./agent-chat.policy.ts";
 import * as svc from "./agent-chat.service.ts";
 
-/** 404 for every agent-chat route while the feature flag is off. */
+/** 404 for every agent-chat route while the kill switch is on. */
 export function requireAgentChat(_req: Request, res: Response, next: NextFunction) {
   if (!agentChatEnabled()) {
     res.status(404).json({ success: false, message: "Not found" });

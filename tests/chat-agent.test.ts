@@ -1,6 +1,6 @@
 // tests/chat-agent.test.ts
 //
-// P10 Stage 5 — agents inside the existing chat engine (AGENT_CHAT_ENABLED on).
+// P10 Stage 5 — agents inside the existing chat engine (on by default: AGENT_CHAT_ENABLED unset).
 // Real policy / service / controller / socket code; Prisma and Redis are an
 // in-memory store patched onto the real client. Covers: agent↔staff,
 // agent↔linked vendor only, unlinked / customer / delivery / other agent
@@ -12,10 +12,11 @@
 
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import jwt from "jsonwebtoken";
 
 process.env.AGENT_ACCESS_TOKEN_SECRET ??= "agent-secret-for-tests-0123456789abcdefghijklmnop";
-process.env.AGENT_CHAT_ENABLED = "1";
+delete process.env.AGENT_CHAT_ENABLED; // default = on; "0" / "false" is the kill switch
 
 const { prisma } = await import("../src/config/prisma.ts");
 const redisClient = (await import("../src/config/redis.ts")).default as any;
@@ -35,7 +36,9 @@ const policy = await import("../src/modules/agent/chat/agent-chat.policy.ts");
 const svc = await import("../src/modules/agent/chat/agent-chat.service.ts");
 const chatC = await import("../src/modules/agent/chat/agent-chat.controller.ts");
 const sock = await import("../src/modules/agent/chat/agent-chat.socket.ts");
-const { piiWarning } = await import("../src/modules/agent/chat/agent-chat.config.ts");
+const { agentChatEnabled, piiWarning } = await import("../src/modules/agent/chat/agent-chat.config.ts");
+const { ConversationService } = await import("../src/modules/chat/services/conversation.service.ts");
+const { ConversationRepository } = await import("../src/modules/chat/repositories/conversation.repository.ts");
 
 type Row = Record<string, any>;
 const restores: Array<() => void> = [];
@@ -154,7 +157,7 @@ const savedEmit = SocketEmitter._emit;
 const savedExtra = [...SocketEmitter._extra];
 
 beforeEach(() => {
-  process.env.AGENT_CHAT_ENABLED = "1";
+  delete process.env.AGENT_CHAT_ENABLED;
   S = { conversations: [], participants: [], messages: [], receipts: [], agents: [], sessions: [], links: [], vendors: [], employees: [], vendorOrders: [], audit: [], calls: [] };
   install();
   emitted = [];
@@ -298,7 +301,7 @@ test("/agent-socket: personal room from the token, conversation rooms per policy
   socket.on("disconnect", () => {});
   handlers.disconnect?.();
 
-  process.env.AGENT_CHAT_ENABLED = "";
+  process.env.AGENT_CHAT_ENABLED = "0";
   assert.equal(sock.setupAgentChatSocket({} as any), null);
 });
 
@@ -406,9 +409,51 @@ test("read-receipt fix: an unknown type matches nobody; existing types still res
   assert.equal(await repo.getParticipantId("CX", "U1", "VENDOR"), undefined);
 });
 
-// ── flag off ──────────────────────────────────────────────────────────────
+// ── default on / kill switch ──────────────────────────────────────────────
 
-test("flag off: agent routes 404, agent conversations invisible even to their participants", async () => {
+test("the flag is an optional kill switch: only \"0\" / \"false\" turn agent chat off", () => {
+  const on = (v: string | undefined) => {
+    if (v === undefined) delete process.env.AGENT_CHAT_ENABLED;
+    else process.env.AGENT_CHAT_ENABLED = v;
+    return agentChatEnabled();
+  };
+  for (const v of [undefined, "", "1", "true", "on", "yes", "anything"]) assert.equal(on(v), true, String(v));
+  for (const v of ["0", "false", "FALSE", " false ", " 0 "]) assert.equal(on(v), false, String(v));
+});
+
+test("flag unset: agent routes pass and the /agent-socket server starts on its own path", async () => {
+  delete process.env.AGENT_CHAT_ENABLED;
+  const res = http();
+  let nexted = false;
+  chatC.requireAgentChat({} as any, res, () => (nexted = true));
+  assert.equal(nexted, true);
+  const httpServer = createServer();
+  const agentIo = sock.setupAgentChatSocket(httpServer);
+  assert.ok(agentIo, "server created");
+  assert.equal(agentIo!.path(), "/agent-socket");
+  await agentIo!.close();
+});
+
+test("kill switch: existing conversations are unaffected — access, send and the list work; agent rows hidden", async () => {
+  const conv = await vendorConversation();
+  S.conversations.push({ id: "CP", type: "PRODUCT_INQUIRY", status: "OPEN" });
+  S.participants.push({ id: "PC", conversationId: "CP", participantType: "CUSTOMER", userId: "U1", vendorId: null, employeeId: null, deliveryPersonId: null, agentId: null, leftAt: null, unreadCount: 0 });
+  const row = (c: Row) => ({ id: "PV", unreadCount: 0, isPinned: false, lastReadMessageId: null, userId: null, vendorId: "V1", employeeId: null, deliveryPersonId: null, conversation: { ...c, participants: [] } });
+  set(ConversationRepository.prototype, "getUserConversations", async () => [row(conv), row(S.conversations.find((c) => c.id === "CP")!)]);
+  for (const value of ["0", "false"]) {
+    process.env.AGENT_CHAT_ENABLED = value;
+    assert.ok((await access.getConversationAccess("CP", actor("CUSTOMER", "U1")))?.participant, "existing access");
+    const sent: any = await new MessageService().send({ conversationId: "CP", messageType: "TEXT", content: "hi", clientId: `off-${value}` } as any, "CUSTOMER" as any, "U1");
+    assert.equal(sent.senderId, "U1");
+    assert.equal("senderAgentId" in sent, false, "no agent column on existing senders");
+    const list = await new ConversationService().getUserList("V1", "VENDOR" as any, {});
+    assert.deepEqual(list.data.map((r: any) => r.conversation.id), ["CP"], "agent conversation hidden, existing one kept");
+    assert.equal("agentLinkId" in list.data[0].conversation, false);
+    await flush();
+  }
+});
+
+test("kill switch: agent routes 404, agent conversations invisible even to their participants", async () => {
   const conv = await vendorConversation();
   process.env.AGENT_CHAT_ENABLED = "0";
   const res = http();

@@ -150,8 +150,8 @@ test("agent auth is disabled (503) when the agent secret is missing, short, or r
 });
 
 test("every /api/admin/agents route: ADMIN passes; staff without agentManagement, vendors, customers, anonymous refused", async () => {
-  // P10: the agent-chat routes answer 404 while AGENT_CHAT_ENABLED is off; switch it on (only these route-gate tests read it) so the admin gate is checked on them too.
-  process.env.AGENT_CHAT_ENABLED = "1";
+  // P10: agent chat is on by default; make sure a kill switch in the environment can't hide its routes from this gate check.
+  delete process.env.AGENT_CHAT_ENABLED;
   const routes = (adminAgentRouter as any).stack.filter((l: any) => l.route);
   assert.ok(routes.length >= 25, "admin routes registered");
   for (const layer of routes) {
@@ -166,8 +166,8 @@ test("every /api/admin/agents route: ADMIN passes; staff without agentManagement
 });
 
 test("agentManagement: admin-side staff holding it pass every admin agent route; vendor staff holding it are still refused", async () => {
-  // P10: the agent-chat routes answer 404 while AGENT_CHAT_ENABLED is off; switch it on (only these route-gate tests read it) so the admin gate is checked on them too.
-  process.env.AGENT_CHAT_ENABLED = "1";
+  // P10: agent chat is on by default; make sure a kill switch in the environment can't hide its routes from this gate check.
+  delete process.env.AGENT_CHAT_ENABLED;
   const { PEOPLE } = await import("./support/phase1-auth.ts");
   const adminStaff = PEOPLE.ADMIN_EMP_WITH.employee.permissions as Record<string, unknown>;
   const vendorStaff = PEOPLE.VENDOR_EMP_WITH.employee.permissions as Record<string, unknown>;

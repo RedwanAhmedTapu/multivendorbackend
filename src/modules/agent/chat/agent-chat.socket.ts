@@ -12,7 +12,7 @@
 // conversationUpdated / messageRead payloads everyone else gets.
 // Every incoming event re-checks the agent (ACTIVE, tokenVersion, session,
 // token expiry) and, for conversation rooms, the agent-chat policy (own
-// conversation; vendor link re-read). Started only when AGENT_CHAT_ENABLED is on.
+// conversation; vendor link re-read). Not started when the AGENT_CHAT_ENABLED kill switch is "0" / "false".
 
 import type { Server as HttpServer } from "node:http";
 import { Server, type Socket } from "socket.io";
@@ -106,7 +106,7 @@ export function attachAgentSocketHandlers(socket: Socket) {
   });
 }
 
-/** Creates the agent Socket.IO server (only when the flag is on). Returns null otherwise. */
+/** Creates the agent Socket.IO server; returns null when the kill switch is on. */
 export function setupAgentChatSocket(httpServer: HttpServer): Server | null {
   if (!agentChatEnabled()) return null;
   const agentIo = new Server(httpServer, {

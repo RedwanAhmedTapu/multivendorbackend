@@ -1,11 +1,12 @@
 // src/modules/agent/chat/agent-chat.config.ts
 //
-// P10 — agents inside the existing chat module. Everything agent-specific is
-// inactive unless AGENT_CHAT_ENABLED is on (backend env; the site has its own
-// NEXT_PUBLIC_AGENT_CHAT_ENABLED). With the flag off, the existing chat
-// behaves exactly as before (tests/chat-baseline/ run both ways).
+// P10 — agents inside the existing chat module. ON by default. AGENT_CHAT_ENABLED
+// is only an optional kill switch: "0" or "false" turns everything agent-specific
+// off (the site and agent app have NEXT_PUBLIC_AGENT_CHAT_ENABLED, same rule).
+// Switched off, the existing chat behaves exactly as before
+// (tests/chat-baseline/ run with the variable unset and with "0").
 
-export const agentChatEnabled = (): boolean => /^(1|true|yes|on)$/i.test(String(process.env.AGENT_CHAT_ENABLED ?? "").trim());
+export const agentChatEnabled = (): boolean => !/^(0|false)$/i.test(String(process.env.AGENT_CHAT_ENABLED ?? "").trim());
 
 /** Conversation types that involve an agent (added by migration 20261103000000). */
 export const AGENT_CONVERSATION_TYPES = ["AGENT_SUPPORT", "AGENT_VENDOR"] as const;

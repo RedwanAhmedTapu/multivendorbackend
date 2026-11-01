@@ -84,7 +84,7 @@ agentPortalRouter.get("/leaderboard", growthC.getLeaderboard);
 agentPortalRouter.get("/alerts", growthC.getAlerts);
 agentPortalRouter.get("/training", growthC.listTraining);
 agentPortalRouter.get("/training/:id", growthC.getTraining);
-// Agent chat inside the existing chat engine (P10) — 404 unless AGENT_CHAT_ENABLED.
+// Agent chat inside the existing chat engine (P10) — 404 when the AGENT_CHAT_ENABLED kill switch is "0" / "false".
 agentPortalRouter.get("/chat/conversations", chatC.requireAgentChat, chatC.list);
 agentPortalRouter.post("/chat/conversations/support", chatC.requireAgentChat, chatC.openSupport);
 agentPortalRouter.post("/chat/conversations/vendor/:vendorId", chatC.requireAgentChat, chatC.openVendor);

@@ -116,9 +116,9 @@ const block = (name: string) => {
   return m![0];
 };
 
-test("schema: ParticipantType and ConversationType values today", () => {
-  assert.deepEqual(block("ParticipantType").match(/^\s+([A-Z_]+)\s*$/gm)!.map((s) => s.trim()), ["CUSTOMER", "VENDOR", "ADMIN", "EMPLOYEE", "DELIVERY"]);
-  assert.deepEqual(block("ConversationType").match(/^\s+([A-Z_]+)\s*$/gm)!.map((s) => s.trim()), ["PRODUCT_INQUIRY", "VENDOR_SUPPORT", "USER_SUPPORT", "DELIVERY_CHAT", "GENERAL_CHAT"]);
+test("schema: the existing ParticipantType and ConversationType values are unchanged and in order (P10 Stage 3 only APPENDS AGENT / AGENT_SUPPORT / AGENT_VENDOR)", () => {
+  assert.deepEqual(block("ParticipantType").match(/^\s+([A-Z_]+)\s*$/gm)!.map((s) => s.trim()), ["CUSTOMER", "VENDOR", "ADMIN", "EMPLOYEE", "DELIVERY", "AGENT"]);
+  assert.deepEqual(block("ConversationType").match(/^\s+([A-Z_]+)\s*$/gm)!.map((s) => s.trim()), ["PRODUCT_INQUIRY", "VENDOR_SUPPORT", "USER_SUPPORT", "DELIVERY_CHAT", "GENERAL_CHAT", "AGENT_SUPPORT", "AGENT_VENDOR"]);
 });
 
 test("schema: participant and sender identity columns cascade on delete (history goes with the identity)", () => {

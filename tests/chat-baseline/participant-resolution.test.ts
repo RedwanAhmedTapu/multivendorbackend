@@ -107,12 +107,12 @@ test("MessageRepository.getParticipantId: where per type for the five known type
   }
 });
 
-test("[read-receipt hole — changed on purpose in Stage 4] getParticipantId with an unknown type adds no identity column", async () => {
-  let seen: any;
-  set(prisma.conversationParticipant, "findFirst", async (args: any) => ((seen = args.where), { id: "ANY" }));
+test("[read-receipt hole — FIXED in Stage 4, the one intended change] getParticipantId with an unknown type matches nobody (was: any participant)", async () => {
+  let queried = false;
+  set(prisma.conversationParticipant, "findFirst", async () => ((queried = true), { id: "ANY" }));
   const id = await new MessageRepository().getParticipantId("C", "I", "SOMETHING_ELSE");
-  assert.deepEqual(seen, { conversationId: "C", leftAt: null });
-  assert.equal(id, "ANY");
+  assert.equal(id, undefined);
+  assert.equal(queried, false, "no lookup at all for an unknown type");
 });
 
 test("getConversationAccess: participant row; support staff only on USER_/VENDOR_SUPPORT; vendor staff never", async () => {

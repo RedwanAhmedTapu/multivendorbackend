@@ -12,11 +12,16 @@
 //   ADMIN    → employeeId       / senderEmployeeId   (admin's employee row)
 //   EMPLOYEE → employeeId       / senderEmployeeId
 //   DELIVERY → deliveryPersonId / senderDeliveryPersonId
+//   AGENT    → agentId          / senderAgentId          (P10; agents table)
+//
+// AGENT columns are emitted ONLY for the AGENT type, so every existing
+// participant type produces exactly the objects it always did (and works with
+// a Prisma client generated before the P10 migration).
 
 import type { ParticipantType } from "@prisma/client";
 
-export type IdentityColumn = "userId" | "vendorId" | "employeeId" | "deliveryPersonId";
-export type SenderColumn = "senderId" | "senderVendorId" | "senderEmployeeId" | "senderDeliveryPersonId";
+export type IdentityColumn = "userId" | "vendorId" | "employeeId" | "deliveryPersonId" | "agentId";
+export type SenderColumn = "senderId" | "senderVendorId" | "senderEmployeeId" | "senderDeliveryPersonId" | "senderAgentId";
 
 export const IDENTITY_COLUMNS: readonly IdentityColumn[] = ["userId", "vendorId", "employeeId", "deliveryPersonId"];
 export const SENDER_COLUMNS: readonly SenderColumn[] = ["senderId", "senderVendorId", "senderEmployeeId", "senderDeliveryPersonId"];
@@ -27,12 +32,14 @@ const IDENTITY_BY_TYPE: Readonly<Record<string, IdentityColumn>> = {
   ADMIN: "employeeId",
   EMPLOYEE: "employeeId",
   DELIVERY: "deliveryPersonId",
+  AGENT: "agentId",
 };
 const SENDER_BY_IDENTITY: Readonly<Record<IdentityColumn, SenderColumn>> = {
   userId: "senderId",
   vendorId: "senderVendorId",
   employeeId: "senderEmployeeId",
   deliveryPersonId: "senderDeliveryPersonId",
+  agentId: "senderAgentId",
 };
 
 /** Role (req.user.role / type) → participant type. Anything unknown → CUSTOMER (historical). */
@@ -69,26 +76,28 @@ export function identityWhere(type: string, id: string, fallback: IdentityColumn
 }
 
 /** All four identity columns for a new participant row: the type's column = id, the rest null. */
-export function identityColumns(type: string, id: string): Record<IdentityColumn, string | null> {
+export function identityColumns(type: string, id: string): Partial<Record<IdentityColumn, string | null>> {
   const col = identityColumnOf(type);
-  return { userId: col === "userId" ? id : null, vendorId: col === "vendorId" ? id : null, employeeId: col === "employeeId" ? id : null, deliveryPersonId: col === "deliveryPersonId" ? id : null };
+  const base = { userId: col === "userId" ? id : null, vendorId: col === "vendorId" ? id : null, employeeId: col === "employeeId" ? id : null, deliveryPersonId: col === "deliveryPersonId" ? id : null };
+  return col === "agentId" ? { ...base, agentId: id } : base;
 }
 
 /** All four sender columns for a new message: the sender type's column = id, the rest null. */
-export function senderColumns(type: string, id: string): Record<SenderColumn, string | null> {
+export function senderColumns(type: string, id: string): Partial<Record<SenderColumn, string | null>> {
   const col = identityColumnOf(type);
   const sender = col ? SENDER_BY_IDENTITY[col] : null;
-  return {
+  const base = {
     senderId: sender === "senderId" ? id : null,
     senderVendorId: sender === "senderVendorId" ? id : null,
     senderEmployeeId: sender === "senderEmployeeId" ? id : null,
     senderDeliveryPersonId: sender === "senderDeliveryPersonId" ? id : null,
   };
+  return sender === "senderAgentId" ? { ...base, senderAgentId: id } : base;
 }
 
 /** The owner id of a participant row: the first non-null identity column (historical ?? order). */
 export function ownerIdOf(row: Partial<Record<IdentityColumn, string | null>>): string | null {
-  return row.userId ?? row.vendorId ?? row.employeeId ?? row.deliveryPersonId ?? null;
+  return row.userId ?? row.vendorId ?? row.employeeId ?? row.deliveryPersonId ?? row.agentId ?? null;
 }
 
 /** Is this participant row the given (type, id)? Unknown types never match (historical fan-out rule). */

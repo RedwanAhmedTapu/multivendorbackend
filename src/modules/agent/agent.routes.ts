@@ -21,6 +21,7 @@ import * as commissionC from "./controllers/agent-commission.controller.ts";
 import * as walletC from "./controllers/agent-wallet.controller.ts";
 import * as referralC from "./controllers/agent-referral.controller.ts";
 import * as growthC from "./controllers/agent-growth.controller.ts";
+import * as chatC from "./chat/agent-chat.controller.ts";
 
 // ── /api/agent/auth ──────────────────────────────────────────────────────
 export const agentAuthRouter = Router();
@@ -83,6 +84,16 @@ agentPortalRouter.get("/leaderboard", growthC.getLeaderboard);
 agentPortalRouter.get("/alerts", growthC.getAlerts);
 agentPortalRouter.get("/training", growthC.listTraining);
 agentPortalRouter.get("/training/:id", growthC.getTraining);
+// Agent chat inside the existing chat engine (P10) — 404 unless AGENT_CHAT_ENABLED.
+agentPortalRouter.get("/chat/conversations", chatC.requireAgentChat, chatC.list);
+agentPortalRouter.post("/chat/conversations/support", chatC.requireAgentChat, chatC.openSupport);
+agentPortalRouter.post("/chat/conversations/vendor/:vendorId", chatC.requireAgentChat, chatC.openVendor);
+agentPortalRouter.get("/chat/conversations/:conversationId/messages", chatC.requireAgentChat, chatC.messages);
+agentPortalRouter.get("/chat/conversations/:conversationId/context", chatC.requireAgentChat, chatC.context);
+agentPortalRouter.post("/chat/conversations/:conversationId/read", chatC.requireAgentChat, chatC.markRead);
+agentPortalRouter.post("/chat/messages", chatC.requireAgentChat, chatC.send);
+agentPortalRouter.post("/chat/messages/:messageId/image", chatC.requireAgentChat, chatC.agentChatUpload, chatC.uploadImage);
+agentPortalRouter.get("/chat/unread", chatC.requireAgentChat, chatC.unread);
 
 // ── /api/admin/agents ────────────────────────────────────────────────────
 export const adminAgentRouter = Router();
@@ -127,6 +138,8 @@ adminAgentRouter.post("/training", growthC.adminCreateTraining);
 adminAgentRouter.patch("/training/:id", growthC.adminUpdateTraining);
 adminAgentRouter.delete("/training/:id", growthC.adminDeleteTraining);
 adminAgentRouter.get("/reports/payable", growthC.adminPayableReport);
+// agent chat (P10): staff list; reading/replying uses the existing /api/chat routes
+adminAgentRouter.get("/chat/conversations", chatC.requireAgentChat, chatC.staffList);
 // agents
 adminAgentRouter.get("/", adminC.listAgents);
 adminAgentRouter.post("/", adminC.createAgent);
@@ -139,3 +152,4 @@ adminAgentRouter.post("/:id/deactivate", adminC.deactivateAgent);
 adminAgentRouter.post("/:id/vendors", adminC.assignVendor);
 adminAgentRouter.get("/:id/wallet", growthC.adminGetAgentWallet);
 adminAgentRouter.post("/:id/wallet/adjustments", growthC.adminAdjustAgentWallet);
+adminAgentRouter.post("/:id/chat", chatC.requireAgentChat, chatC.staffOpenWithAgent);

@@ -1,8 +1,40 @@
 // src/services/warehouse.service.ts
 import { PrismaClient } from '@prisma/client';
 import type { WarehouseType, StockMovementType, Prisma } from '@prisma/client';
+import { AppError } from '../middlewares/error.middleware.ts';
+import { runStockMutation } from '../modules/shared/stock-mutations.ts';
+import {
+  assertVendorAccess,
+  assertWarehouseAccess,
+  type WarehouseActor,
+} from '../modules/shared/warehouse-guard.ts';
 
 const prisma = new PrismaClient();
+
+/** Fields that can never be changed through an update. */
+const IMMUTABLE_WAREHOUSE_FIELDS = ['id', 'vendorId', 'isActive', 'deactivatedAt', 'createdAt', 'updatedAt'] as const;
+
+const FIELD_LOCK_OPERATIONAL =
+  'This field cannot be changed because this warehouse is already being used in operations.';
+const FIELD_LOCK_COURIER_PICKUP =
+  'This field cannot be changed while an active or pending courier pickup store is mapped to this warehouse.';
+
+/** Courier shipments that are not finished yet (goods may still leave or return). */
+const PENDING_COURIER_STATUSES = [
+  'PENDING_PICKUP',
+  'READY_FOR_PICKUP',
+  'PICKED_UP',
+  'PICKUP_FAILED',
+  'IN_TRANSIT',
+  'OUT_FOR_DELIVERY',
+  'PARTIAL_DELIVERED',
+  'FAILED_DELIVERY',
+  'RETURNING',
+  'ON_HOLD',
+] as any[];
+
+/** Purchase orders that can still receive goods. */
+const OPEN_PURCHASE_STATUSES = ['DRAFT', 'CONFIRMED', 'PARTIALLY_RECEIVED'] as any[];
 
 interface CreateWarehouseInput {
   vendorId: string;
@@ -41,28 +73,29 @@ interface UpdateHolidayInput {
 }
 
 // ─── Rack interfaces ─────────────────────────────────────────────
+// A rack no longer *is* a row/shelf — it declares how many rows/shelves
+// it has. Actual placement lives on WarehouseStock (rackId + rowNumber + shelfNumber).
 
 export interface CreateRackInput {
   warehouseId: string;
   code: string;
   label?: string;
-  row?: string;
-  shelf?: string;
+  totalRows?: number;      // default 1
+  totalShelves?: number;   // default 1
   isActive?: boolean;
 }
 
 export interface UpdateRackInput {
   code?: string;
   label?: string;
-  row?: string;
-  shelf?: string;
+  totalRows?: number;
+  totalShelves?: number;
   isActive?: boolean;
 }
 
 export interface RackFilter {
   warehouseId?: string;
   isActive?: boolean;
-  row?: string;
 }
 
 interface BulkWarehouseInput {
@@ -86,12 +119,13 @@ interface BulkWarehouseInput {
 }
 
 // ─── Stock interfaces ────────────────────────────────────────────
+// "Location" = the bin a stock row lives in. rackId/rowNumber/shelfNumber
+// can all be omitted/null — that's how a vendor with no rack layout works.
 
 export interface ReceivePurchaseOrderInput {
   purchaseOrderId: string;
   warehouseId: string;
   vendorId: string;
-  /** Per-item receiving — allows partial receipt */
   items: Array<{
     purchaseOrderItemId: string;
     variantId: string;
@@ -99,7 +133,9 @@ export interface ReceivePurchaseOrderInput {
     unitCost: number;
     newAvgCost: number;
     sellPrice?: number;
-    rackId?: string;       // optional rack placement on receive
+    rackId?: string;
+    rowNumber?: number;
+    shelfNumber?: number;
   }>;
   createdBy?: string;
 }
@@ -108,9 +144,11 @@ export interface StockAdjustmentInput {
   variantId: string;
   warehouseId: string;
   vendorId: string;
-  quantity: number;           // always positive — direction comes from movementType
+  quantity: number;
   movementType: Extract<StockMovementType, 'ADJUSTMENT' | 'DAMAGE' | 'RETURN'>;
-  rackId?: string;            // optional: scope adjustment to a specific rack
+  rackId?: string;
+  rowNumber?: number;
+  shelfNumber?: number;
   reason?: string;
   notes?: string;
   createdBy?: string;
@@ -122,19 +160,30 @@ export interface StockTransferInput {
   toWarehouseId: string;
   vendorId: string;
   quantity: number;
-  toRackId?: string;          // optional: place stock in a specific rack in destination
+  // source bin (also used by sellDamagedStock, which only ever reads from* fields)
+  fromRackId?: string;
+  fromRowNumber?: number;
+  fromShelfNumber?: number;
+  // destination bin (transfer only)
+  toRackId?: string;
+  toRowNumber?: number;
+  toShelfNumber?: number;
   reason?: string;
   notes?: string;
-  saleAmount?: number;        // only for SELL_DAMAGE
-  coaAccountId?: string;      // receipt account for SELL_DAMAGE
+  saleAmount?: number;
+  coaAccountId?: string;
   createdBy?: string;
 }
 
 export interface WarehouseStockFilter {
   warehouseId?: string;
+  /** Vendor scope: only stock in this vendor's warehouses. */
+  vendorId?: string;
   variantId?: string;
-  rackId?: string;            // filter by rack
-  lowStockOnly?: boolean;     // qty <= reorderLevel
+  rackId?: string;
+  rowNumber?: number;
+  shelfNumber?: number;
+  lowStockOnly?: boolean;
   outOfStockOnly?: boolean;
   page?: number;
   limit?: number;
@@ -143,115 +192,123 @@ export interface WarehouseStockFilter {
 export class WarehouseService {
 
   // ─────────────────────────────────────────────────────────────────
+  // INTERNAL HELPERS — bin location validation & compound-key builder
+  // ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Validates a (rackId, rowNumber, shelfNumber) combination against a warehouse:
+   * - No rackId → rowNumber/shelfNumber must also be absent (can't place in a "row" of nothing).
+   * - rackId present → must belong to this warehouse and be active.
+   * - rowNumber/shelfNumber, if given, must be within the rack's configured capacity.
+   * Returns the rack row when one was validated, otherwise undefined.
+   */
+  private async validateStockLocation(
+    warehouseId: string,
+    rackId?: string | null,
+    rowNumber?: number | null,
+    shelfNumber?: number | null,
+  ) {
+    if (!rackId) {
+      if (rowNumber || shelfNumber) {
+        const error = new Error('rowNumber/shelfNumber require a rackId');
+        (error as any).statusCode = 400;
+        throw error;
+      }
+      return undefined;
+    }
+
+    const rack = await prisma.warehouseRack.findUnique({ where: { id: rackId } });
+    if (!rack || rack.warehouseId !== warehouseId || !rack.isActive) {
+      const error = new Error('Rack is invalid, inactive, or does not belong to this warehouse');
+      (error as any).statusCode = 400;
+      throw error;
+    }
+
+    if (rowNumber !== undefined && rowNumber !== null) {
+      if (rowNumber < 1 || rowNumber > rack.totalRows) {
+        const error = new Error(
+          `rowNumber must be between 1 and ${rack.totalRows} for rack "${rack.code}"`,
+        );
+        (error as any).statusCode = 400;
+        throw error;
+      }
+    }
+
+    if (shelfNumber !== undefined && shelfNumber !== null) {
+      if (shelfNumber < 1 || shelfNumber > rack.totalShelves) {
+        const error = new Error(
+          `shelfNumber must be between 1 and ${rack.totalShelves} for rack "${rack.code}"`,
+        );
+        (error as any).statusCode = 400;
+        throw error;
+      }
+    }
+
+    return rack;
+  }
+
+  /** Builds the WarehouseStock compound-unique `where` for the new 5-part key. */
+  private stockUniqueWhere(
+    variantId: string,
+    warehouseId: string,
+    rackId?: string | null,
+    rowNumber?: number | null,
+    shelfNumber?: number | null,
+  ) {
+    return {
+      variantId_warehouseId_rackId_rowNumber_shelfNumber: {
+        variantId,
+        warehouseId,
+        rackId: rackId ?? null,
+        rowNumber: rowNumber ?? null,
+        shelfNumber: shelfNumber ?? null,
+      },
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────────
   // BULK CREATE / UPDATE
   // ─────────────────────────────────────────────────────────────────
 
-  async createOrUpdateBulkWarehouses(vendorId: string, data: BulkWarehouseInput) {
-    const vendor = await prisma.vendor.findUnique({ where: { id: vendorId } });
-    if (!vendor) {
-      const error = new Error('Vendor not found');
-      (error as any).statusCode = 404;
-      throw error;
-    }
+  async createOrUpdateBulkWarehouses(vendorId: string, data: BulkWarehouseInput, actor?: WarehouseActor) {
+    assertVendorAccess(vendorId, actor);
+    const vendor = await prisma.vendor.findUnique({ where: { id: vendorId }, select: { id: true } });
+    if (!vendor) throw new AppError('Vendor not found', 404);
+
+    // Same create/update rules (scope, allow-list, field locks) as the
+    // single-warehouse endpoints. With several warehouses of a type, the
+    // vendor's default (then oldest) active one is the one updated.
+    const findPrimary = (type: WarehouseType) =>
+      prisma.vendorWarehouse.findFirst({
+        where: { vendorId, type, isActive: true },
+        orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
+        select: { id: true },
+      });
+    const upsertPrimary = async (type: WarehouseType, payload: any, isDefault: boolean) => {
+      const existing = await findPrimary(type);
+      return existing
+        ? this.updateWarehouse(existing.id, { ...payload, isDefault }, actor)
+        : this.createWarehouse({ ...payload, vendorId, type, isDefault }, actor);
+    };
+    const pick = (w: any) => ({
+      locationId: w.locationId,
+      address: w.address,
+      code: w.code,
+      name: w.name,
+      email: w.email,
+      phone: w.phone,
+    });
 
     const result: any = {};
 
     if (data.pickupWarehouse) {
-      const pickupLocation = await prisma.locations.findUnique({
-        where: { id: data.pickupWarehouse.locationId },
-      });
-      if (!pickupLocation) {
-        const error = new Error('Pickup location not found');
-        (error as any).statusCode = 404;
-        throw error;
-      }
-
-      const existingPickup = await prisma.vendorWarehouse.findFirst({
-        where: { vendorId, type: 'PICKUP' },
-      });
-
-      const pickupData = {
-        locationId: data.pickupWarehouse.locationId,
-        address: data.pickupWarehouse.address,
-        code: data.pickupWarehouse.code,
-        name: data.pickupWarehouse.name,
-        email: data.pickupWarehouse.email,
-        phone: data.pickupWarehouse.phone,
-        isDefault: true,
-      };
-
-      result.pickupWarehouse = existingPickup
-        ? await prisma.vendorWarehouse.update({
-            where: { id: existingPickup.id },
-            data: pickupData,
-            include: { vendor: true, location: true },
-          })
-        : await prisma.vendorWarehouse.create({
-            data: { ...pickupData, vendorId, type: 'PICKUP' },
-            include: { vendor: true, location: true },
-          });
+      result.pickupWarehouse = await upsertPrimary('PICKUP', pick(data.pickupWarehouse), true);
     }
 
     if (data.returnWarehouse && !data.returnWarehouse.sameAsPickup) {
-      const returnLocation = await prisma.locations.findUnique({
-        where: { id: data.returnWarehouse.locationId },
-      });
-      if (!returnLocation) {
-        const error = new Error('Return location not found');
-        (error as any).statusCode = 404;
-        throw error;
-      }
-
-      const existingReturn = await prisma.vendorWarehouse.findFirst({
-        where: { vendorId, type: 'RETURN' },
-      });
-
-      const returnData = {
-        locationId: data.returnWarehouse.locationId,
-        address: data.returnWarehouse.address,
-        code: data.returnWarehouse.code,
-        name: data.returnWarehouse.name,
-        email: data.returnWarehouse.email,
-        phone: data.returnWarehouse.phone,
-        isDefault: false,
-      };
-
-      result.returnWarehouse = existingReturn
-        ? await prisma.vendorWarehouse.update({
-            where: { id: existingReturn.id },
-            data: returnData,
-            include: { vendor: true, location: true },
-          })
-        : await prisma.vendorWarehouse.create({
-            data: { ...returnData, vendorId, type: 'RETURN' },
-            include: { vendor: true, location: true },
-          });
-
+      result.returnWarehouse = await upsertPrimary('RETURN', pick(data.returnWarehouse), false);
     } else if (data.returnWarehouse?.sameAsPickup) {
-      const existingReturn = await prisma.vendorWarehouse.findFirst({
-        where: { vendorId, type: 'RETURN' },
-      });
-
-      const returnData = {
-        locationId: data.pickupWarehouse!.locationId,
-        address: data.pickupWarehouse!.address,
-        code: data.pickupWarehouse?.code,
-        name: data.pickupWarehouse?.name,
-        email: data.pickupWarehouse?.email,
-        phone: data.pickupWarehouse?.phone,
-        isDefault: false,
-      };
-
-      result.returnWarehouse = existingReturn
-        ? await prisma.vendorWarehouse.update({
-            where: { id: existingReturn.id },
-            data: returnData,
-            include: { vendor: true, location: true },
-          })
-        : await prisma.vendorWarehouse.create({
-            data: { ...returnData, vendorId, type: 'RETURN' },
-            include: { vendor: true, location: true },
-          });
+      result.returnWarehouse = await upsertPrimary('RETURN', pick(data.pickupWarehouse!), false);
     }
 
     return result;
@@ -259,65 +316,229 @@ export class WarehouseService {
 
   // ─────────────────────────────────────────────────────────────────
   // WAREHOUSE CRUD
+  //
+  // Vendor isolation: every operation is scoped by the authenticated actor
+  // (warehouse-guard.ts). Updates use an explicit allow-list — the request
+  // body is never passed to Prisma, and vendorId/id can never be changed.
+  //
+  // Lifecycle: ACTIVE → (derived) OPERATIONAL → INACTIVE (isActive = false).
+  // "Operational" is computed from existing references (getWarehouseUsage);
+  // it is never stored.
   // ─────────────────────────────────────────────────────────────────
 
-  async createWarehouse(data: CreateWarehouseInput) {
-    const vendor = await prisma.vendor.findUnique({ where: { id: data.vendorId } });
-    if (!vendor) {
-      const error = new Error('Vendor not found');
-      (error as any).statusCode = 404;
-      throw error;
-    }
-
-    const location = await prisma.locations.findUnique({ where: { id: data.locationId } });
-    if (!location) {
-      const error = new Error('Location not found');
-      (error as any).statusCode = 404;
-      throw error;
-    }
-
-    if (data.code) {
-      const existing = await prisma.vendorWarehouse.findFirst({
-        where: { vendorId: data.vendorId, code: data.code, type: data.type || 'PICKUP' },
-      });
-      if (existing) {
-        const error = new Error('Warehouse with this code and type already exists');
-        (error as any).statusCode = 409;
-        throw error;
-      }
-    }
-
-    if (data.isDefault) {
-      await prisma.vendorWarehouse.updateMany({
-        where: { vendorId: data.vendorId, type: data.type || 'PICKUP', isDefault: true },
-        data: { isDefault: false },
-      });
-    }
-
-    return prisma.vendorWarehouse.create({
-      data: {
-        vendorId: data.vendorId,
-        locationId: data.locationId,
-        code: data.code,
-        name: data.name,
-        address: data.address,
-        email: data.email,
-        phone: data.phone,
-        isDefault: data.isDefault || false,
-        type: data.type || 'PICKUP',
-      },
-      include: { vendor: true, location: true },
+  /**
+   * Derived usage of a warehouse: whether it is operational, which fields are
+   * locked, and whether it can be deactivated or hard-deleted.
+   * Read-only; safe to call inside a transaction (pass `db`).
+   */
+  async getWarehouseUsage(id: string, db: any = prisma) {
+    const warehouse = await db.vendorWarehouse.findUnique({
+      where: { id },
+      select: { id: true, vendorId: true, isActive: true, deactivatedAt: true },
     });
+    if (!warehouse) throw new AppError('Warehouse not found', 404);
+
+    const [
+      stock,
+      purchaseReceiveItems,
+      allocations,
+      pendingAllocationRows,
+      stockMovements,
+      courierOrders,
+      pendingCourierOrders,
+      posSaleItems,
+      purchaseOrders,
+      openPurchaseOrders,
+      openCourierPickups,
+      courierPickups,
+    ] = await Promise.all([
+      db.warehouseStock.aggregate({
+        where: { warehouseId: id },
+        _sum: { quantity: true, reservedQty: true, damagedQty: true },
+      }),
+      db.purchaseReceiveItem.count({ where: { warehouseId: id } }),
+      db.orderItemAllocation.count({ where: { warehouseId: id } }),
+      // allocation rows still waiting to ship (released/cancelled rows are
+      // shrunk to their shipped quantity, so quantity > shippedQty = pending)
+      db.$queryRaw`SELECT count(*)::int AS "n" FROM "order_item_allocations" WHERE "warehouseId" = ${id} AND "quantity" > "shippedQty"`,
+      db.stockMovement.count({ where: { OR: [{ fromWarehouseId: id }, { toWarehouseId: id }] } }),
+      db.courierOrder.count({ where: { warehouseId: id } }),
+      db.courierOrder.count({ where: { warehouseId: id, status: { in: PENDING_COURIER_STATUSES } } }),
+      db.posSaleItem.count({ where: { warehouseId: id } }),
+      db.purchaseOrder.count({ where: { warehouseId: id } }),
+      db.purchaseOrder.count({ where: { warehouseId: id, receivingStatus: { in: OPEN_PURCHASE_STATUSES } } }),
+      db.warehouseCourierPickup.count({ where: { warehouseId: id, status: { in: ['ACTIVE', 'PENDING_APPROVAL'] } } }),
+      db.warehouseCourierPickup.count({ where: { warehouseId: id } }),
+    ]);
+
+    const onHand = stock._sum.quantity ?? 0;
+    const reserved = stock._sum.reservedQty ?? 0;
+    const damaged = stock._sum.damagedQty ?? 0;
+    const pendingAllocations = Number(pendingAllocationRows?.[0]?.n ?? 0);
+
+    const counts = {
+      stockOnHand: onHand,
+      stockReserved: reserved,
+      stockDamaged: damaged,
+      purchaseReceiveItems,
+      allocations,
+      pendingAllocations,
+      stockMovements,
+      courierOrders,
+      pendingCourierOrders,
+      posSaleItems,
+      purchaseOrders,
+      openPurchaseOrders,
+      openCourierPickups,
+      courierPickups,
+    };
+
+    // Operational = the warehouse has been used for real stock/order activity.
+    const operational =
+      onHand > 0 ||
+      reserved > 0 ||
+      damaged > 0 ||
+      purchaseReceiveItems > 0 ||
+      allocations > 0 ||
+      stockMovements > 0 ||
+      courierOrders > 0 ||
+      posSaleItems > 0;
+
+    const locks = {
+      locationId: operational ? FIELD_LOCK_OPERATIONAL : null,
+      type: operational ? FIELD_LOCK_OPERATIONAL : null,
+      address: openCourierPickups > 0 ? FIELD_LOCK_COURIER_PICKUP : null,
+    };
+
+    const deactivationBlockers: string[] = [];
+    if (onHand > 0 || reserved > 0 || damaged > 0) {
+      deactivationBlockers.push(
+        `Warehouse still holds stock (on hand ${onHand}, reserved ${reserved}, damaged ${damaged}). Transfer or clear it first.`,
+      );
+    }
+    if (pendingAllocations > 0) {
+      deactivationBlockers.push(`${pendingAllocations} order allocation(s) from this warehouse are not shipped yet.`);
+    }
+    if (pendingCourierOrders > 0) {
+      deactivationBlockers.push(`${pendingCourierOrders} courier shipment(s) from this warehouse are still in progress.`);
+    }
+    if (openPurchaseOrders > 0) {
+      deactivationBlockers.push(`${openPurchaseOrders} open purchase order(s) are still due to be received into this warehouse.`);
+    }
+
+    const hardDeleteBlockers: string[] = [];
+    if (operational) hardDeleteBlockers.push('Warehouse has been used in operations — deactivate it instead.');
+    if (purchaseOrders > 0) hardDeleteBlockers.push('Purchase orders reference this warehouse — deactivate it instead.');
+    if (courierPickups > 0) hardDeleteBlockers.push('Courier pickup mappings reference this warehouse — deactivate it instead.');
+
+    return {
+      warehouseId: id,
+      isActive: warehouse.isActive,
+      deactivatedAt: warehouse.deactivatedAt,
+      operational,
+      counts,
+      locks,
+      canDeactivate: warehouse.isActive && deactivationBlockers.length === 0,
+      deactivationBlockers,
+      canHardDelete: hardDeleteBlockers.length === 0,
+      hardDeleteBlockers,
+    };
+  }
+
+  /** Allow-listed, normalized create/update payload. Never includes vendorId/id. */
+  private pickWarehouseFields(body: any) {
+    const out: {
+      locationId?: string;
+      code?: string | null;
+      name?: string | null;
+      address?: string | null;
+      email?: string | null;
+      phone?: string | null;
+      type?: WarehouseType;
+      isDefault?: boolean;
+    } = {};
+    if (!body || typeof body !== 'object') return out;
+    const optionalText = (v: unknown) => {
+      if (v === null) return null;
+      if (typeof v !== 'string') throw new AppError('Warehouse text fields must be strings', 400);
+      const t = v.trim();
+      return t.length ? t : null;
+    };
+    if (body.locationId !== undefined) {
+      if (typeof body.locationId !== 'string' || !body.locationId.trim()) throw new AppError('locationId is required', 400);
+      out.locationId = body.locationId.trim();
+    }
+    for (const k of ['code', 'name', 'address', 'email', 'phone'] as const) {
+      if (body[k] !== undefined) out[k] = optionalText(body[k]);
+    }
+    if (body.type !== undefined) {
+      if (body.type !== 'PICKUP' && body.type !== 'RETURN') throw new AppError('type must be PICKUP or RETURN', 400);
+      out.type = body.type;
+    }
+    if (body.isDefault !== undefined) out.isDefault = body.isDefault === true;
+    return out;
+  }
+
+  async createWarehouse(data: CreateWarehouseInput, actor?: WarehouseActor) {
+    assertVendorAccess(data.vendorId, actor);
+    const fields = this.pickWarehouseFields(data);
+    if (!fields.locationId) throw new AppError('locationId is required', 400);
+    const type = fields.type ?? 'PICKUP';
+
+    const vendor = await prisma.vendor.findUnique({ where: { id: data.vendorId }, select: { id: true } });
+    if (!vendor) throw new AppError('Vendor not found', 404);
+
+    const location = await prisma.locations.findUnique({ where: { id: fields.locationId }, select: { id: true } });
+    if (!location) throw new AppError('Location not found', 404);
+
+    if (fields.code) {
+      const existing = await prisma.vendorWarehouse.findFirst({
+        where: { vendorId: data.vendorId, code: fields.code, type },
+        select: { id: true },
+      });
+      if (existing) throw new AppError('Warehouse with this code and type already exists', 409);
+    }
+
+    try {
+      return await prisma.$transaction(async (tx) => {
+        if (fields.isDefault) {
+          await tx.vendorWarehouse.updateMany({
+            where: { vendorId: data.vendorId, type, isDefault: true },
+            data: { isDefault: false },
+          });
+        }
+        return tx.vendorWarehouse.create({
+          data: {
+            vendorId: data.vendorId,
+            locationId: fields.locationId!,
+            code: fields.code ?? null,
+            name: fields.name ?? null,
+            address: fields.address ?? null,
+            email: fields.email ?? null,
+            phone: fields.phone ?? null,
+            isDefault: fields.isDefault ?? false,
+            type,
+          },
+          include: { vendor: true, location: true },
+        });
+      });
+    } catch (err: any) {
+      if (err?.code === 'P2002') throw new AppError('Warehouse with this code and type already exists', 409);
+      throw err;
+    }
   }
 
   async getWarehousesByVendor(
     vendorId: string,
-    filters: { type?: WarehouseType; isDefault?: boolean; locationId?: string } = {}
+    filters: { type?: WarehouseType; isDefault?: boolean; locationId?: string; isActive?: boolean } = {},
+    actor?: WarehouseActor,
   ) {
+    assertVendorAccess(vendorId, actor);
     const where: Prisma.VendorWarehouseWhereInput = { vendorId };
     if (filters.type) where.type = filters.type;
     if (filters.isDefault !== undefined) where.isDefault = filters.isDefault;
     if (filters.locationId) where.locationId = filters.locationId;
+    if (filters.isActive !== undefined) where.isActive = filters.isActive;
 
     return prisma.vendorWarehouse.findMany({
       where,
@@ -339,15 +560,16 @@ export class WarehouseService {
                 product: { select: { id: true, name: true } },
               },
             },
-            rack: { select: { id: true, code: true, label: true } },
+            rack: { select: { id: true, code: true, label: true, totalRows: true, totalShelves: true } },
           },
         },
       },
-      orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
+      orderBy: [{ isActive: 'desc' }, { isDefault: 'desc' }, { createdAt: 'desc' }],
     });
   }
 
-  async getWarehouseById(id: string, includeHolidays = false) {
+  async getWarehouseById(id: string, includeHolidays = false, actor?: WarehouseActor) {
+    await assertWarehouseAccess(id, actor);
     const warehouse = await prisma.vendorWarehouse.findUnique({
       where: { id },
       include: {
@@ -355,7 +577,7 @@ export class WarehouseService {
         location: true,
         holidays: includeHolidays ? { orderBy: { start: 'asc' } } : false,
         racks: {
-          orderBy: [{ row: 'asc' }, { code: 'asc' }],
+          orderBy: { code: 'asc' },
         },
         warehouseStock: {
           include: {
@@ -364,116 +586,176 @@ export class WarehouseService {
                 product: { select: { id: true, name: true, slug: true } },
               },
             },
-            rack: { select: { id: true, code: true, label: true, row: true, shelf: true } },
+            rack: {
+              select: { id: true, code: true, label: true, totalRows: true, totalShelves: true },
+            },
           },
+          // rowNumber/shelfNumber come back automatically as scalar fields on WarehouseStock
           orderBy: { updatedAt: 'desc' },
         },
       },
     });
 
-    if (!warehouse) {
-      const error = new Error('Warehouse not found');
-      (error as any).statusCode = 404;
-      throw error;
-    }
-
+    if (!warehouse) throw new AppError('Warehouse not found', 404);
     return warehouse;
   }
 
-  async updateWarehouse(id: string, data: UpdateWarehouseInput) {
-    const existing = await prisma.vendorWarehouse.findUnique({ where: { id } });
-    if (!existing) {
-      const error = new Error('Warehouse not found');
-      (error as any).statusCode = 404;
-      throw error;
-    }
+  /** Usage / lock state for the edit UI (scoped). */
+  async getWarehouseUsageForActor(id: string, actor?: WarehouseActor) {
+    await assertWarehouseAccess(id, actor);
+    return this.getWarehouseUsage(id);
+  }
 
-    if (data.code && data.code !== existing.code) {
-      const duplicate = await prisma.vendorWarehouse.findFirst({
-        where: {
-          vendorId: existing.vendorId,
-          code: data.code,
-          type: data.type || existing.type,
-          id: { not: id },
-        },
-      });
-      if (duplicate) {
-        const error = new Error('Warehouse with this code and type already exists');
-        (error as any).statusCode = 409;
-        throw error;
+  async updateWarehouse(id: string, body: any, actor?: WarehouseActor) {
+    for (const forbidden of IMMUTABLE_WAREHOUSE_FIELDS) {
+      if (body && Object.prototype.hasOwnProperty.call(body, forbidden)) {
+        throw new AppError(`${forbidden} cannot be changed`, 400);
       }
     }
+    await assertWarehouseAccess(id, actor);
+    const fields = this.pickWarehouseFields(body);
 
-    if (data.isDefault) {
-      await prisma.vendorWarehouse.updateMany({
-        where: {
-          vendorId: existing.vendorId,
-          type: data.type || existing.type,
-          isDefault: true,
-          id: { not: id },
-        },
-        data: { isDefault: false },
-      });
+    if (fields.locationId) {
+      const location = await prisma.locations.findUnique({ where: { id: fields.locationId }, select: { id: true } });
+      if (!location) throw new AppError('Location not found', 404);
     }
 
+    try {
+      // Serializable (runStockMutation): a concurrent first receive/allocation
+      // and a location/type change cannot both commit on a stale usage read.
+      return await runStockMutation(prisma, async (tx: any) => {
+        const existing = await tx.vendorWarehouse.findUnique({ where: { id } });
+        if (!existing) throw new AppError('Warehouse not found', 404);
+
+        const changes: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(fields)) {
+          if (k === 'isDefault') continue;
+          if ((existing as any)[k] !== v) changes[k] = v;
+        }
+
+        const lockCandidates = ['locationId', 'type', 'address'].filter((k) => k in changes);
+        if (lockCandidates.length) {
+          const usage = await this.getWarehouseUsage(id, tx);
+          for (const k of lockCandidates) {
+            const reason = (usage.locks as any)[k];
+            if (reason) throw new AppError(`${k}: ${reason}`, 409);
+          }
+        }
+
+        const nextType = (changes.type as WarehouseType | undefined) ?? existing.type;
+        const nextCode = 'code' in changes ? (changes.code as string | null) : existing.code;
+        if (nextCode && ('code' in changes || 'type' in changes)) {
+          const duplicate = await tx.vendorWarehouse.findFirst({
+            where: { vendorId: existing.vendorId, code: nextCode, type: nextType, id: { not: id } },
+            select: { id: true },
+          });
+          if (duplicate) throw new AppError('Warehouse with this code and type already exists', 409);
+        }
+
+        if (fields.isDefault === true) {
+          if (!existing.isActive) throw new AppError('A deactivated warehouse cannot be the default', 409);
+          await tx.vendorWarehouse.updateMany({
+            where: { vendorId: existing.vendorId, type: nextType, isDefault: true, id: { not: id } },
+            data: { isDefault: false },
+          });
+          changes.isDefault = true;
+        } else if (fields.isDefault === false) {
+          changes.isDefault = false;
+        }
+
+        return tx.vendorWarehouse.update({
+          where: { id },
+          data: changes,
+          include: { vendor: true, location: true },
+        });
+      });
+    } catch (err: any) {
+      if (err?.code === 'P2002') throw new AppError('Warehouse with this code and type already exists', 409);
+      throw err;
+    }
+  }
+
+  /**
+   * Deactivate: only when no stock (on hand / reserved / damaged) and no
+   * pending operational references remain. History is never touched.
+   */
+  async deactivateWarehouse(id: string, actor?: WarehouseActor) {
+    await assertWarehouseAccess(id, actor);
+    return runStockMutation(prisma, async (tx: any) => {
+      const usage = await this.getWarehouseUsage(id, tx);
+      if (!usage.isActive) {
+        return tx.vendorWarehouse.findUnique({ where: { id }, include: { vendor: true, location: true } });
+      }
+      if (usage.deactivationBlockers.length) {
+        throw new AppError(`Warehouse cannot be deactivated: ${usage.deactivationBlockers.join(' ')}`, 409);
+      }
+      return tx.vendorWarehouse.update({
+        where: { id },
+        data: { isActive: false, deactivatedAt: new Date(), isDefault: false },
+        include: { vendor: true, location: true },
+      });
+    });
+  }
+
+  async reactivateWarehouse(id: string, actor?: WarehouseActor) {
+    await assertWarehouseAccess(id, actor);
     return prisma.vendorWarehouse.update({
       where: { id },
-      data,
+      data: { isActive: true, deactivatedAt: null },
       include: { vendor: true, location: true },
     });
   }
 
-  async deleteWarehouse(id: string) {
-    const warehouse = await prisma.vendorWarehouse.findUnique({
-      where: { id },
-      include: { warehouseStock: true },
+  /** Hard delete — only for a warehouse that was never operational and has no history. */
+  async deleteWarehouse(id: string, actor?: WarehouseActor) {
+    await assertWarehouseAccess(id, actor);
+    await runStockMutation(prisma, async (tx: any) => {
+      const usage = await this.getWarehouseUsage(id, tx);
+      if (!usage.canHardDelete) {
+        throw new AppError(`Warehouse cannot be deleted: ${usage.hardDeleteBlockers.join(' ')}`, 409);
+      }
+      await tx.vendorWarehouse.delete({ where: { id } });
     });
-    if (!warehouse) {
-      const error = new Error('Warehouse not found');
-      (error as any).statusCode = 404;
-      throw error;
-    }
-
-    const hasStock = warehouse.warehouseStock.some(s => s.quantity > 0);
-    if (hasStock) {
-      const error = new Error(
-        'Cannot delete warehouse with existing stock. Transfer or adjust stock to zero first.'
-      );
-      (error as any).statusCode = 409;
-      throw error;
-    }
-
-    await prisma.vendorWarehouse.delete({ where: { id } });
     return { success: true };
   }
 
-  async setDefaultWarehouse(id: string) {
-    const warehouse = await prisma.vendorWarehouse.findUnique({ where: { id } });
-    if (!warehouse) {
-      const error = new Error('Warehouse not found');
-      (error as any).statusCode = 404;
-      throw error;
-    }
+  async setDefaultWarehouse(id: string, actor?: WarehouseActor) {
+    await assertWarehouseAccess(id, actor);
+    return prisma.$transaction(async (tx) => {
+      const warehouse = await tx.vendorWarehouse.findUnique({ where: { id } });
+      if (!warehouse) throw new AppError('Warehouse not found', 404);
+      if (!warehouse.isActive) throw new AppError('A deactivated warehouse cannot be the default', 409);
 
-    await prisma.vendorWarehouse.updateMany({
-      where: {
-        vendorId: warehouse.vendorId,
-        type: warehouse.type,
-        isDefault: true,
-        id: { not: id },
-      },
-      data: { isDefault: false },
-    });
+      await tx.vendorWarehouse.updateMany({
+        where: { vendorId: warehouse.vendorId, type: warehouse.type, isDefault: true, id: { not: id } },
+        data: { isDefault: false },
+      });
 
-    return prisma.vendorWarehouse.update({
-      where: { id },
-      data: { isDefault: true },
-      include: { vendor: true, location: true },
+      return tx.vendorWarehouse.update({
+        where: { id },
+        data: { isDefault: true },
+        include: { vendor: true, location: true },
+      });
     });
   }
 
+  /** Warehouse id of a rack (for ownership checks); 404 when missing. */
+  async getRackWarehouseId(rackId: string): Promise<string> {
+    const rack = await prisma.warehouseRack.findUnique({ where: { id: rackId }, select: { warehouseId: true } });
+    if (!rack) throw new AppError('Rack not found', 404);
+    return rack.warehouseId;
+  }
+
+  /** Warehouse id of a holiday (for ownership checks); 404 when missing. */
+  async getHolidayWarehouseId(holidayId: string): Promise<string> {
+    const holiday = await prisma.warehouseHoliday.findUnique({ where: { id: holidayId }, select: { warehouseId: true } });
+    if (!holiday) throw new AppError('Holiday not found', 404);
+    return holiday.warehouseId;
+  }
+
   // ─────────────────────────────────────────────────────────────────
-  // RACK CRUD
+  // RACK CRUD — a rack declares its row/shelf capacity; placement of
+  // actual stock into a specific row/shelf happens on WarehouseStock.
   // ─────────────────────────────────────────────────────────────────
 
   async createRack(data: CreateRackInput) {
@@ -495,13 +777,24 @@ export class WarehouseService {
       throw error;
     }
 
+    if (data.totalRows !== undefined && data.totalRows < 1) {
+      const error = new Error('totalRows must be at least 1');
+      (error as any).statusCode = 400;
+      throw error;
+    }
+    if (data.totalShelves !== undefined && data.totalShelves < 1) {
+      const error = new Error('totalShelves must be at least 1');
+      (error as any).statusCode = 400;
+      throw error;
+    }
+
     return prisma.warehouseRack.create({
       data: {
         warehouseId: data.warehouseId,
         code: data.code,
         label: data.label,
-        row: data.row,
-        shelf: data.shelf,
+        totalRows: data.totalRows ?? 1,
+        totalShelves: data.totalShelves ?? 1,
         isActive: data.isActive ?? true,
       },
       include: {
@@ -513,7 +806,6 @@ export class WarehouseService {
   async getRacksByWarehouse(warehouseId: string, filters: RackFilter = {}) {
     const where: Prisma.WarehouseRackWhereInput = { warehouseId };
     if (filters.isActive !== undefined) where.isActive = filters.isActive;
-    if (filters.row) where.row = filters.row;
 
     return prisma.warehouseRack.findMany({
       where,
@@ -529,7 +821,7 @@ export class WarehouseService {
           },
         },
       },
-      orderBy: [{ row: 'asc' }, { code: 'asc' }],
+      orderBy: { code: 'asc' },
     });
   }
 
@@ -576,6 +868,34 @@ export class WarehouseService {
       if (duplicate) {
         const error = new Error(
           `Rack with code "${data.code}" already exists in this warehouse`
+        );
+        (error as any).statusCode = 409;
+        throw error;
+      }
+    }
+
+    // Guard against shrinking capacity below row/shelf numbers already in use.
+    if (data.totalRows !== undefined && data.totalRows < existing.totalRows) {
+      const maxRow = await prisma.warehouseStock.aggregate({
+        where: { rackId: id, rowNumber: { not: null } },
+        _max: { rowNumber: true },
+      });
+      if (maxRow._max.rowNumber && maxRow._max.rowNumber > data.totalRows) {
+        const error = new Error(
+          `Cannot reduce totalRows below ${maxRow._max.rowNumber} — stock is already placed there`
+        );
+        (error as any).statusCode = 409;
+        throw error;
+      }
+    }
+    if (data.totalShelves !== undefined && data.totalShelves < existing.totalShelves) {
+      const maxShelf = await prisma.warehouseStock.aggregate({
+        where: { rackId: id, shelfNumber: { not: null } },
+        _max: { shelfNumber: true },
+      });
+      if (maxShelf._max.shelfNumber && maxShelf._max.shelfNumber > data.totalShelves) {
+        const error = new Error(
+          `Cannot reduce totalShelves below ${maxShelf._max.shelfNumber} — stock is already placed there`
         );
         (error as any).statusCode = 409;
         throw error;
@@ -633,7 +953,7 @@ export class WarehouseService {
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // HOLIDAY CRUD
+  // HOLIDAY CRUD (unchanged)
   // ─────────────────────────────────────────────────────────────────
 
   async createHoliday(data: CreateHolidayInput) {
@@ -768,6 +1088,9 @@ export class WarehouseService {
       (error as any).statusCode = 404;
       throw error;
     }
+    if (!warehouse.isActive) {
+      throw new AppError('Warehouse is deactivated and cannot receive stock', 409);
+    }
 
     const purchaseOrder = await prisma.purchaseOrder.findUnique({
       where: { id: input.purchaseOrderId },
@@ -787,19 +1110,14 @@ export class WarehouseService {
       throw error;
     }
 
-    // Validate all rackIds belong to this warehouse (if provided)
-    const rackIds = [...new Set(input.items.map(i => i.rackId).filter(Boolean))] as string[];
-    if (rackIds.length > 0) {
-      const racks = await prisma.warehouseRack.findMany({
-        where: { id: { in: rackIds }, warehouseId: input.warehouseId, isActive: true },
-      });
-      if (racks.length !== rackIds.length) {
-        const error = new Error(
-          'One or more rack IDs are invalid, inactive, or do not belong to this warehouse'
-        );
-        (error as any).statusCode = 400;
-        throw error;
-      }
+    // Validate every item's target bin (rack + row + shelf) up front, before touching data.
+    for (const item of input.items) {
+      await this.validateStockLocation(
+        input.warehouseId,
+        item.rackId,
+        item.rowNumber,
+        item.shelfNumber,
+      );
     }
 
     const movements: any[] = [];
@@ -808,23 +1126,24 @@ export class WarehouseService {
       for (const item of input.items) {
         if (item.receivedQty <= 0) continue;
 
-        // 1. Upsert WarehouseStock — scoped to rack if provided
+        // 1. Upsert WarehouseStock at the exact bin (rack/row/shelf may all be null)
         await tx.warehouseStock.upsert({
-          where: {
-            variantId_warehouseId: {
-              variantId: item.variantId,
-              warehouseId: input.warehouseId,
-            },
-          },
+          where: this.stockUniqueWhere(
+            item.variantId,
+            input.warehouseId,
+            item.rackId,
+            item.rowNumber,
+            item.shelfNumber,
+          ),
           update: {
             quantity: { increment: item.receivedQty },
-            // Update rackId only when explicitly supplied
-            ...(item.rackId !== undefined ? { rackId: item.rackId } : {}),
           },
           create: {
             variantId: item.variantId,
             warehouseId: input.warehouseId,
             rackId: item.rackId ?? null,
+            rowNumber: item.rowNumber ?? null,
+            shelfNumber: item.shelfNumber ?? null,
             quantity: item.receivedQty,
             reservedQty: 0,
             damagedQty: 0,
@@ -881,54 +1200,46 @@ export class WarehouseService {
   // ─────────────────────────────────────────────────────────────────
 
   async adjustStock(input: StockAdjustmentInput) {
-    // Validate rack ownership when rackId is provided
-    if (input.rackId) {
-      const rack = await prisma.warehouseRack.findUnique({ where: { id: input.rackId } });
-      if (!rack || rack.warehouseId !== input.warehouseId || !rack.isActive) {
-        const error = new Error('Rack is invalid, inactive, or does not belong to this warehouse');
+    const target = await prisma.vendorWarehouse.findUnique({
+      where: { id: input.warehouseId },
+      select: { isActive: true },
+    });
+    if (!target) throw new AppError('Warehouse not found', 404);
+    if (!target.isActive) throw new AppError('Warehouse is deactivated and its stock cannot be adjusted', 409);
+
+    await this.validateStockLocation(
+      input.warehouseId,
+      input.rackId,
+      input.rowNumber,
+      input.shelfNumber,
+    );
+
+    const stockWhere = this.stockUniqueWhere(
+      input.variantId,
+      input.warehouseId,
+      input.rackId,
+      input.rowNumber,
+      input.shelfNumber,
+    );
+
+    const warehouseStock = await prisma.warehouseStock.findUnique({ where: stockWhere });
+
+    const isDeduction =
+      input.movementType === 'ADJUSTMENT' || input.movementType === 'DAMAGE';
+
+    if (isDeduction) {
+      if (!warehouseStock || warehouseStock.quantity < input.quantity) {
+        const error = new Error(
+          `Insufficient stock. Available: ${warehouseStock?.quantity ?? 0}, requested: ${input.quantity}`
+        );
         (error as any).statusCode = 400;
         throw error;
       }
     }
 
-    const warehouseStock = await prisma.warehouseStock.findUnique({
-      where: {
-        variantId_warehouseId: {
-          variantId: input.variantId,
-          warehouseId: input.warehouseId,
-        },
-      },
-    });
-
-    if (!warehouseStock) {
-      const error = new Error(
-        'No stock record found for this variant in the specified warehouse'
-      );
-      (error as any).statusCode = 404;
-      throw error;
-    }
-
-    const isDeduction =
-      input.movementType === 'ADJUSTMENT' || input.movementType === 'DAMAGE';
-
-    if (isDeduction && warehouseStock.quantity < input.quantity) {
-      const error = new Error(
-        `Insufficient stock. Available: ${warehouseStock.quantity}, requested: ${input.quantity}`
-      );
-      (error as any).statusCode = 400;
-      throw error;
-    }
-
     let movement: any;
 
     await prisma.$transaction(async (tx) => {
-      const stockWhere = {
-        variantId_warehouseId: {
-          variantId: input.variantId,
-          warehouseId: input.warehouseId,
-        },
-      };
-
       if (input.movementType === 'DAMAGE') {
         await tx.warehouseStock.update({
           where: stockWhere,
@@ -956,12 +1267,19 @@ export class WarehouseService {
         });
 
       } else if (input.movementType === 'RETURN') {
-        await tx.warehouseStock.update({
+        // RETURN may create a brand-new bin record (e.g. first-time restock into that slot).
+        await tx.warehouseStock.upsert({
           where: stockWhere,
-          data: {
-            quantity: { increment: input.quantity },
-            // Assign to rack if provided
-            ...(input.rackId !== undefined ? { rackId: input.rackId } : {}),
+          update: { quantity: { increment: input.quantity } },
+          create: {
+            variantId: input.variantId,
+            warehouseId: input.warehouseId,
+            rackId: input.rackId ?? null,
+            rowNumber: input.rowNumber ?? null,
+            shelfNumber: input.shelfNumber ?? null,
+            quantity: input.quantity,
+            reservedQty: 0,
+            damagedQty: 0,
           },
         });
         await tx.productVariant.update({
@@ -999,31 +1317,50 @@ export class WarehouseService {
       (error as any).statusCode = 400;
       throw error;
     }
-
-    // Validate destination rack when provided
-    if (input.toRackId) {
-      const rack = await prisma.warehouseRack.findUnique({ where: { id: input.toRackId } });
-      if (!rack || rack.warehouseId !== input.toWarehouseId || !rack.isActive) {
-        const error = new Error(
-          'Destination rack is invalid, inactive, or does not belong to the destination warehouse'
-        );
-        (error as any).statusCode = 400;
-        throw error;
-      }
+    // Both ends must belong to the same vendor; the destination must be active.
+    const [fromWh, toWh] = await Promise.all([
+      prisma.vendorWarehouse.findUnique({ where: { id: input.fromWarehouseId }, select: { vendorId: true } }),
+      prisma.vendorWarehouse.findUnique({ where: { id: input.toWarehouseId }, select: { vendorId: true, isActive: true } }),
+    ]);
+    if (!fromWh || !toWh) throw new AppError('Warehouse not found', 404);
+    if (fromWh.vendorId !== toWh.vendorId) {
+      throw new AppError('Stock can only be transferred between warehouses of the same vendor', 403);
     }
+    if (!toWh.isActive) throw new AppError('Destination warehouse is deactivated', 409);
 
-    const fromStock = await prisma.warehouseStock.findUnique({
-      where: {
-        variantId_warehouseId: {
-          variantId: input.variantId,
-          warehouseId: input.fromWarehouseId,
-        },
-      },
-    });
+    await this.validateStockLocation(
+      input.fromWarehouseId,
+      input.fromRackId,
+      input.fromRowNumber,
+      input.fromShelfNumber,
+    );
+    await this.validateStockLocation(
+      input.toWarehouseId,
+      input.toRackId,
+      input.toRowNumber,
+      input.toShelfNumber,
+    );
+
+    const fromWhere = this.stockUniqueWhere(
+      input.variantId,
+      input.fromWarehouseId,
+      input.fromRackId,
+      input.fromRowNumber,
+      input.fromShelfNumber,
+    );
+    const toWhere = this.stockUniqueWhere(
+      input.variantId,
+      input.toWarehouseId,
+      input.toRackId,
+      input.toRowNumber,
+      input.toShelfNumber,
+    );
+
+    const fromStock = await prisma.warehouseStock.findUnique({ where: fromWhere });
 
     if (!fromStock || fromStock.quantity < input.quantity) {
       const error = new Error(
-        `Insufficient stock in source warehouse. Available: ${fromStock?.quantity ?? 0}`
+        `Insufficient stock in source bin. Available: ${fromStock?.quantity ?? 0}`
       );
       (error as any).statusCode = 400;
       throw error;
@@ -1032,41 +1369,29 @@ export class WarehouseService {
     let movement: any;
 
     await prisma.$transaction(async (tx) => {
-      // Deduct from source
+      // Deduct from source bin
       await tx.warehouseStock.update({
-        where: {
-          variantId_warehouseId: {
-            variantId: input.variantId,
-            warehouseId: input.fromWarehouseId,
-          },
-        },
+        where: fromWhere,
         data: { quantity: { decrement: input.quantity } },
       });
 
-      // Add to destination (upsert — destination may not have a record yet)
+      // Add to destination bin (upsert — destination bin may not exist yet)
       await tx.warehouseStock.upsert({
-        where: {
-          variantId_warehouseId: {
-            variantId: input.variantId,
-            warehouseId: input.toWarehouseId,
-          },
-        },
-        update: {
-          quantity: { increment: input.quantity },
-          // Update rack placement in destination if specified
-          ...(input.toRackId !== undefined ? { rackId: input.toRackId } : {}),
-        },
+        where: toWhere,
+        update: { quantity: { increment: input.quantity } },
         create: {
           variantId: input.variantId,
           warehouseId: input.toWarehouseId,
           rackId: input.toRackId ?? null,
+          rowNumber: input.toRowNumber ?? null,
+          shelfNumber: input.toShelfNumber ?? null,
           quantity: input.quantity,
           reservedQty: 0,
           damagedQty: 0,
         },
       });
 
-      // Total variant stock unchanged — only warehouse distribution changes
+      // Total variant stock unchanged — only warehouse/bin distribution changes
       movement = await tx.stockMovement.create({
         data: {
           variantId: input.variantId,
@@ -1091,14 +1416,15 @@ export class WarehouseService {
   // ─────────────────────────────────────────────────────────────────
 
   async sellDamagedStock(input: StockTransferInput) {
-    const warehouseStock = await prisma.warehouseStock.findUnique({
-      where: {
-        variantId_warehouseId: {
-          variantId: input.variantId,
-          warehouseId: input.fromWarehouseId,
-        },
-      },
-    });
+    const fromWhere = this.stockUniqueWhere(
+      input.variantId,
+      input.fromWarehouseId,
+      input.fromRackId,
+      input.fromRowNumber,
+      input.fromShelfNumber,
+    );
+
+    const warehouseStock = await prisma.warehouseStock.findUnique({ where: fromWhere });
 
     if (!warehouseStock || warehouseStock.damagedQty < input.quantity) {
       const error = new Error(
@@ -1112,12 +1438,7 @@ export class WarehouseService {
 
     await prisma.$transaction(async (tx) => {
       await tx.warehouseStock.update({
-        where: {
-          variantId_warehouseId: {
-            variantId: input.variantId,
-            warehouseId: input.fromWarehouseId,
-          },
-        },
+        where: fromWhere,
         data: { damagedQty: { decrement: input.quantity } },
       });
 
@@ -1155,8 +1476,11 @@ export class WarehouseService {
 
     const where: Prisma.WarehouseStockWhereInput = {};
     if (filters.warehouseId) where.warehouseId = filters.warehouseId;
+    if (filters.vendorId) where.warehouse = { vendorId: filters.vendorId };
     if (filters.variantId) where.variantId = filters.variantId;
     if (filters.rackId) where.rackId = filters.rackId;
+    if (filters.rowNumber !== undefined) where.rowNumber = filters.rowNumber;
+    if (filters.shelfNumber !== undefined) where.shelfNumber = filters.shelfNumber;
     if (filters.outOfStockOnly) where.quantity = 0;
 
     const [rows, total] = await Promise.all([
@@ -1167,7 +1491,7 @@ export class WarehouseService {
             select: { id: true, name: true, code: true, type: true, location: true },
           },
           rack: {
-            select: { id: true, code: true, label: true, row: true, shelf: true },
+            select: { id: true, code: true, label: true, totalRows: true, totalShelves: true },
           },
           variant: {
             include: {
@@ -1195,6 +1519,8 @@ export class WarehouseService {
   async getStockMovements(filters: {
     variantId?: string;
     warehouseId?: string;
+    /** Vendor scope: only movements touching this vendor's warehouses. */
+    vendorId?: string;
     movementType?: StockMovementType;
     startDate?: Date;
     endDate?: Date;
@@ -1212,6 +1538,11 @@ export class WarehouseService {
       where.OR = [
         { fromWarehouseId: filters.warehouseId },
         { toWarehouseId: filters.warehouseId },
+      ];
+    }
+    if (filters.vendorId) {
+      where.AND = [
+        { OR: [{ fromWarehouse: { vendorId: filters.vendorId } }, { toWarehouse: { vendorId: filters.vendorId } }] },
       ];
     }
     if (filters.startDate || filters.endDate) {

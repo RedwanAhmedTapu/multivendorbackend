@@ -11,6 +11,9 @@ import { PrismaClient } from '@prisma/client';
 
 
 const prisma = new PrismaClient();
+
+/** Test hook (same pattern as orderServiceDb / paymentServiceDb): this module's own client. */
+export const storeLayoutDb = prisma;
 // ─────────────────────────────────────────────
 // INPUT TYPES
 // ─────────────────────────────────────────────
@@ -199,10 +202,12 @@ export class StoreDecorationService {
     });
   }
 
-  /** Public storefront — fetch the live default by slug or vendorId */
+  /** Public storefront — fetch the live default by slug or vendorId.
+   *  Only an ACTIVE vendor has a public storefront: a SUSPENDED /
+   *  DEACTIVATED / PENDING vendor resolves to null → 404. */
   async getPublishedDecoration(vendorId: string) {
     return prisma.storeDecoration.findFirst({
-      where: { vendorId, isDefault: true, status: 'PUBLISHED' },
+      where: { vendorId, isDefault: true, status: 'PUBLISHED', vendor: { status: 'ACTIVE' } },
       include: DECORATION_FULL,
     });
   }

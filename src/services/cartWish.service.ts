@@ -1,9 +1,22 @@
 // services/cartWish.service.ts
 import { PrismaClient } from "@prisma/client";
 import { v4 as uuidv4 } from "uuid";
-import courierService from '../services/courier.service.ts';
+import { buildCheckoutQuote } from "./order.service.ts";
+import { effectivePrice } from "../modules/shared/pricing.ts";
 
 const prisma = new PrismaClient();
+
+/** This module's own Prisma client — exported only so tests can stub its delegates. */
+export const cartWishDb = prisma;
+
+/** The delivery preview's address is missing or not the customer's own (→ 404). */
+export class AddressNotFoundError extends Error {
+  readonly code = "ADDRESS_NOT_FOUND";
+  constructor() {
+    super("Delivery address not found");
+    this.name = "AddressNotFoundError";
+  }
+}
 
 interface AddToCartRequest {
   userId?: string;
@@ -39,86 +52,121 @@ interface CartSummary {
 }
 
 export class CartWishService {
+  // ==================== STOCK / WEIGHT HELPERS ====================
+  // NOTE: ProductVariant no longer carries a `stock` field — stock lives in
+  // WarehouseStock (per warehouse/rack). "Available" = quantity - reserved - damaged,
+  // summed across all warehouses that hold this variant.
+
+  private async getAvailableStock(variantId: string): Promise<number> {
+    const agg = await prisma.warehouseStock.aggregate({
+      where: { variantId },
+      _sum: { quantity: true, reservedQty: true, damagedQty: true },
+    });
+    const qty = agg._sum.quantity || 0;
+    const reserved = agg._sum.reservedQty || 0;
+    const damaged = agg._sum.damagedQty || 0;
+    return Math.max(0, qty - reserved - damaged);
+  }
+
+  private async getAvailableStockMap(
+    variantIds: string[]
+  ): Promise<Map<string, number>> {
+    const map = new Map<string, number>();
+    const uniqueIds = [...new Set(variantIds)];
+    if (uniqueIds.length === 0) return map;
+
+    uniqueIds.forEach((id) => map.set(id, 0));
+
+    const rows = await prisma.warehouseStock.groupBy({
+      by: ["variantId"],
+      where: { variantId: { in: uniqueIds } },
+      _sum: { quantity: true, reservedQty: true, damagedQty: true },
+    });
+
+    for (const row of rows) {
+      const qty = row._sum.quantity || 0;
+      const reserved = row._sum.reservedQty || 0;
+      const damaged = row._sum.damagedQty || 0;
+      map.set(row.variantId, Math.max(0, qty - reserved - damaged));
+    }
+
+    return map;
+  }
+
   // ==================== CART METHODS ====================
 
   /**
    * Get or create cart for user/session
    */
   async getOrCreateCart(
-  userId?: string,
-  sessionId?: string,
-  fingerprint?: string
-) {
-  if (!userId && !sessionId) {
-    throw new Error("Either userId or sessionId is required");
-  }
+    userId?: string,
+    sessionId?: string,
+    fingerprint?: string
+  ) {
+    if (!userId && !sessionId) {
+      throw new Error("Either userId or sessionId is required");
+    }
 
-  const now = new Date();
-  let cart = null;
+    const now = new Date();
+    let cart = null;
 
-  // 1️⃣ Prefer user cart
-  if (userId) {
-    cart = await prisma.carts.findUnique({
-      where: { userId }
-    });
-  }
+    if (userId) {
+      cart = await prisma.carts.findUnique({ where: { userId } });
+    }
 
-  // 2️⃣ Fallback to session cart
-  if (!cart && sessionId) {
-    cart = await prisma.carts.findUnique({
-      where: { sessionId }
-    });
-  }
+    if (!cart && sessionId) {
+      cart = await prisma.carts.findUnique({ where: { sessionId } });
+    }
 
-  // 3️⃣ Create cart if none exists
-  if (!cart) {
-    cart = await prisma.carts.create({
-      data: {
-        userId: userId || null,
-        sessionId: sessionId || uuidv4(),
-        fingerprint,
-        isGuest: !userId,
-        lastActivityAt: now,
-        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-      }
-    });
-  }
+    if (!cart) {
+      cart = await prisma.carts.create({
+        data: {
+          userId: userId || null,
+          sessionId: sessionId || uuidv4(),
+          fingerprint,
+          isGuest: !userId,
+          lastActivityAt: now,
+          expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        },
+      });
+    }
 
-  // 4️⃣ If guest cart → user logged in (VERY IMPORTANT)
-  if (userId && cart.isGuest) {
-    cart = await prisma.carts.update({
+    if (userId && cart.isGuest) {
+      cart = await prisma.carts.update({
+        where: { id: cart.id },
+        data: {
+          userId,
+          isGuest: false,
+          updatedAt: now,
+        },
+      });
+    }
+
+    await prisma.carts.update({
       where: { id: cart.id },
       data: {
-        userId,
-        isGuest: false,
-        updatedAt: now
-      }
+        lastActivityAt: now,
+        updatedAt: now,
+      },
     });
+
+    return cart;
   }
-
-  // 5️⃣ Update activity
-  await prisma.carts.update({
-    where: { id: cart.id },
-    data: {
-      lastActivityAt: now,
-      updatedAt: now
-    }
-  });
-
-  return cart;
-}
 
   /**
    * Add item to cart
    */
   async addToCart(data: AddToCartRequest) {
-    // Get or create cart
     const cart = await this.getOrCreateCart(data.userId, data.sessionId);
 
-    // Check if product and variant exist
     const variant = await prisma.productVariant.findUnique({
       where: { id: data.variantId },
-      include: {
+      select: {
+        id: true,
+        productId: true,
+        price: true,
+        specialPrice: true,
+        availability: true,
         product: {
           select: {
             id: true,
@@ -138,14 +186,28 @@ export class CartWishService {
       throw new Error("Variant does not belong to the specified product");
     }
 
-    // Check stock availability
-    if (variant.stock < data.quantity) {
+    if (variant.availability === false) {
+      throw new Error("This product variant is currently unavailable");
+    }
+
+    // 1C-23: a variant without a valid positive price can never be a
+    // legitimate cart line — block it at add time (the B15 price snapshot
+    // is taken from variant.price right below, so it must be sane first).
+    if (!(Number(variant.price) > 0)) {
       throw new Error(
-        `Insufficient stock. Available: ${variant.stock}, Requested: ${data.quantity}`
+        "This product variant has no valid price yet and cannot be added to the cart"
+      );
+    }
+    const snapshot = effectivePrice(variant.price, variant.specialPrice);
+
+    // Check stock availability via WarehouseStock (no more variant.stock)
+    const availableStock = await this.getAvailableStock(data.variantId);
+    if (availableStock < data.quantity) {
+      throw new Error(
+        `Insufficient stock. Available: ${availableStock}, Requested: ${data.quantity}`
       );
     }
 
-    // Check if item already exists in cart
     const existingItem = await prisma.cart_items.findUnique({
       where: {
         cartId_variantId: {
@@ -158,13 +220,11 @@ export class CartWishService {
     let cartItem;
 
     if (existingItem) {
-      // Update quantity
       const newQuantity = existingItem.quantity + data.quantity;
 
-      // Check stock for new quantity
-      if (variant.stock < newQuantity) {
+      if (availableStock < newQuantity) {
         throw new Error(
-          `Insufficient stock. Available: ${variant.stock}, Total requested: ${newQuantity}`
+          `Insufficient stock. Available: ${availableStock}, Total requested: ${newQuantity}`
         );
       }
 
@@ -177,7 +237,6 @@ export class CartWishService {
         },
       });
     } else {
-      // Create new cart item
       cartItem = await prisma.cart_items.create({
         data: {
           id: uuidv4(),
@@ -185,8 +244,11 @@ export class CartWishService {
           productId: data.productId,
           variantId: data.variantId,
           quantity: data.quantity,
-          price: variant.price,
-          compareAtPrice: variant.specialPrice,
+          // Approved rule (modules/shared/pricing.ts): the line price is the
+          // server-computed selling price; compareAtPrice is the regular price
+          // only while a valid discount is active. Never a client value.
+          price: snapshot.price.toNumber(),
+          compareAtPrice: snapshot.compareAtPrice ? snapshot.compareAtPrice.toNumber() : null,
           notes: data.notes,
           isSelected: true,
           lastSelectedAt: new Date(),
@@ -194,7 +256,6 @@ export class CartWishService {
       });
     }
 
-    // Return cart item with product details
     return await prisma.cart_items.findUnique({
       where: { id: cartItem.id },
       include: {
@@ -203,7 +264,6 @@ export class CartWishService {
             id: true,
             name: true,
             slug: true,
-
             vendorId: true,
           },
         },
@@ -213,10 +273,7 @@ export class CartWishService {
             sku: true,
             price: true,
             specialPrice: true,
-            stock: true,
-            // weight: true,  // Remove if doesn't exist in your schema
-            // variantImage: true,  // Remove if doesn't exist
-            // attributeValues: true,  // Remove if doesn't exist
+            availability: true,
           },
         },
       },
@@ -232,13 +289,12 @@ export class CartWishService {
     userId?: string,
     sessionId?: string
   ) {
-    // Verify cart item belongs to user/session
     const cartItem = await prisma.cart_items.findUnique({
       where: { id: cartItemId },
       include: {
         carts: true,
         product_variants: {
-          select: { stock: true },
+          select: { id: true, availability: true },
         },
       },
     });
@@ -247,7 +303,6 @@ export class CartWishService {
       throw new Error("Cart item not found");
     }
 
-    // Verify ownership
     if (userId && cartItem.carts.userId !== userId) {
       throw new Error("Unauthorized");
     }
@@ -255,20 +310,21 @@ export class CartWishService {
       throw new Error("Unauthorized");
     }
 
-    // If updating quantity, check stock
     if (data.quantity !== undefined) {
       if (data.quantity <= 0) {
         throw new Error("Quantity must be greater than 0");
       }
 
-      if (cartItem.product_variants.stock < data.quantity) {
-        throw new Error(
-          `Insufficient stock. Available: ${cartItem.product_variants.stock}`
-        );
+      if (cartItem.product_variants.availability === false) {
+        throw new Error("This product variant is currently unavailable");
+      }
+
+      const availableStock = await this.getAvailableStock(cartItem.variantId);
+      if (availableStock < data.quantity) {
+        throw new Error(`Insufficient stock. Available: ${availableStock}`);
       }
     }
 
-    // Update cart item
     const updateData: any = { updatedAt: new Date() };
     if (data.quantity !== undefined) updateData.quantity = data.quantity;
     if (data.notes !== undefined) updateData.notes = data.notes;
@@ -288,7 +344,6 @@ export class CartWishService {
             id: true,
             name: true,
             slug: true,
-
             vendorId: true,
           },
         },
@@ -298,7 +353,7 @@ export class CartWishService {
             sku: true,
             price: true,
             specialPrice: true,
-            stock: true,
+            availability: true,
           },
         },
       },
@@ -313,7 +368,6 @@ export class CartWishService {
     userId?: string,
     sessionId?: string
   ) {
-    // Verify cart item belongs to user/session
     const cartItem = await prisma.cart_items.findUnique({
       where: { id: cartItemId },
       include: { carts: true },
@@ -323,7 +377,6 @@ export class CartWishService {
       throw new Error("Cart item not found");
     }
 
-    // Verify ownership
     if (userId && cartItem.carts.userId !== userId) {
       throw new Error("Unauthorized");
     }
@@ -356,8 +409,14 @@ export class CartWishService {
                 id: true,
                 name: true,
                 slug: true,
-
                 vendorId: true,
+                // 1C-22: read-only display fields for the cart UI (vendor
+                // group header + product image fallback). No logic change.
+                vendor: { select: { storeName: true } },
+                images: {
+                  select: { url: true, altText: true },
+                  orderBy: { sortOrder: "asc" },
+                },
               },
             },
             product_variants: {
@@ -366,7 +425,19 @@ export class CartWishService {
                 sku: true,
                 price: true,
                 specialPrice: true,
-                stock: true,
+                availability: true,
+                images: {
+                  select: { url: true, altText: true },
+                  orderBy: { sortOrder: "asc" },
+                },
+                // 1C-22: variant options (e.g. Color-Black) for the cart line
+                attributes: {
+                  select: {
+                    attributeValue: {
+                      select: { value: true, attribute: { select: { name: true } } },
+                    },
+                  },
+                },
               },
             },
           },
@@ -385,7 +456,6 @@ export class CartWishService {
       };
     }
 
-    // Calculate totals
     const totalItems = cart.cart_items.reduce(
       (sum, item) => sum + item.quantity,
       0
@@ -403,16 +473,27 @@ export class CartWishService {
       .filter((item) => item.isSelected)
       .reduce((sum, item) => sum + item.price * item.quantity, 0);
 
-    // Enhance items with calculated fields
-    const items = cart.cart_items.map((item) => ({
-      ...item,
-      itemTotal: item.price * item.quantity,
-      savings: item.compareAtPrice
-        ? (item.compareAtPrice - item.price) * item.quantity
-        : 0,
-      isInStock: item.product_variants.stock >= item.quantity,
-      availableStock: item.product_variants.stock,
-    }));
+    // Batch-fetch real stock (no more variant.stock)
+    const variantIds = cart.cart_items.map((item) => item.variantId);
+    const stockMap = await this.getAvailableStockMap(variantIds);
+
+    const items = cart.cart_items.map((item) => {
+      const availableStock = stockMap.get(item.variantId) ?? 0;
+      return {
+        ...item,
+        itemTotal: item.price * item.quantity,
+        // Only a real discount saves money (lines snapshotted before the
+        // selling-price fix stored the lower special price as compareAtPrice).
+        savings:
+          item.compareAtPrice != null && item.compareAtPrice > item.price
+            ? (item.compareAtPrice - item.price) * item.quantity
+            : 0,
+        isInStock:
+          availableStock >= item.quantity &&
+          item.product_variants.availability !== false,
+        availableStock,
+      };
+    });
 
     return {
       totalItems,
@@ -423,301 +504,65 @@ export class CartWishService {
     };
   }
 
-
-/**
- * Calculate delivery fees for each vendor using courier service
- */
-// Add this method to get vendor groups from cart
-private async getVendorGroupsFromCart(
-  userId?: string,
-  sessionId?: string,
-  selectedItemIds?: string[]
-): Promise<any[]> {
-  // Build the where clause for cart items
-  const whereClause: any = {
-    OR: []
-  };
-  
-  if (userId) {
-    whereClause.OR.push({ userId });
-  }
-  
-  if (sessionId) {
-    whereClause.OR.push({ sessionId });
-  }
-  
-  // If no conditions, return empty array
-  if (whereClause.OR.length === 0) {
-    return [];
-  }
-
-  // Find the cart
-  const cart = await prisma.carts.findFirst({
-    where: whereClause,
-    include: {
-      cart_items: {
-        where: selectedItemIds && selectedItemIds.length > 0 
-          ? { id: { in: selectedItemIds } } 
-          : {},
-        include: {
-          products: {
-            include: {
-              vendor: true // Just get vendor basic info
-            }
-          },
-          product_variants: {
-            include: {
-              product: {
-                include: {
-                  vendor: true
-                }
-              }
-            }
-          }
-        }
-      }
+  /**
+   * Phase 2 (H-3): the checkout preview IS the checkout quote — the same
+   * computation placeOrder repeats inside its transaction (order.service
+   * buildCheckoutQuote): current selling prices, the reservation plan
+   * (default warehouse first, split across warehouses as needed) and the
+   * per-warehouse delivery charges, plus the quoteHash the order must be
+   * placed with. Read-only: no reservation, no cart change. Uses the cart's
+   * selected lines (exactly what placeOrder uses); `selectedItemIds` and
+   * `codEnabled` are accepted for compatibility but change no amount.
+   */
+  async calculateDeliveryFees(
+    userId: string | undefined,
+    _sessionId: string,
+    userAddressId: string,
+    _codEnabled: boolean = false,
+    _selectedItemIds?: string[]
+  ) {
+    if (!userAddressId) {
+      throw new Error("User address ID is required");
     }
-  });
-
-  if (!cart || cart.cart_items.length === 0) {
-    return [];
-  }
-
-  // Get all vendor IDs from cart items
-  const vendorIds = [...new Set(cart.cart_items.map(item => item.products.vendorId))];
-  
-  // Fetch warehouses for these vendors
-  const warehouses = await prisma.vendorWarehouse.findMany({
-    where: {
-      vendorId: { in: vendorIds }
-    },
-    include: {
-      location: true
+    if (!userId) {
+      throw new Error("Session ID or User ID is required");
     }
-  });
 
-  // Group warehouses by vendorId (take the default or first warehouse)
-  const warehousesByVendor = new Map();
-  warehouses.forEach(warehouse => {
-    const vendorId = warehouse.vendorId;
-    
-    // If vendor doesn't have a warehouse yet, or this is the default warehouse
-    if (!warehousesByVendor.has(vendorId) || warehouse.isDefault) {
-      warehousesByVendor.set(vendorId, warehouse);
-    }
-  });
-
-  // Group items by vendor
-  const vendorGroupsMap = new Map();
-  
-  for (const item of cart.cart_items) {
-    const vendor = item.products.vendor;
-    const vendorId = vendor.id;
-    
-    // Get warehouse for this vendor
-    const vendorWarehouse = warehousesByVendor.get(vendorId);
-    
-    if (!vendorGroupsMap.has(vendorId)) {
-      vendorGroupsMap.set(vendorId, {
-        vendor: {
-          id: vendor.id,
-          name: vendor.storeName || vendor.id, // Use storeName from Vendor
-        },
-        warehouse: vendorWarehouse,
-        items: [],
-        subtotal: 0
-      });
-    }
-    
-    const group = vendorGroupsMap.get(vendorId);
-    const itemTotal = item.price * item.quantity;
-    
-    // Get variant weight - check your schema for where weight is stored
-    // Looking at your schema, weight is in Warranty model, not in ProductVariant
-    // We'll use a default weight of 0.5kg for now
-    const variantWeight = 0.5; // Default weight in kg
-    
-    group.items.push({
-      id: item.id,
-      variant: {
-        id: item.variantId,
-        name: item.product_variants?.name || 
-              item.product_variants?.sku || 
-              'Default',
-        weight: variantWeight,
-        product: {
-          id: item.products.id,
-          name: item.products.name,
-          vendor: item.products.vendor
-        }
-      },
-      price: item.price,
-      quantity: item.quantity
+    // The address must be the customer's own (as at placement).
+    const address = await prisma.userAddress.findFirst({
+      where: { id: userAddressId, userId },
+      select: { id: true, locationId: true },
     });
-    group.subtotal += itemTotal;
-  }
-  
-  return Array.from(vendorGroupsMap.values());
-}
-
-// Rename your existing method for internal use
-private async calculateDeliveryFeesForVendorGroups(
-  vendorGroups: any[],
-  userAddressId: string,
-  codEnabled: boolean = false
-) {
-  console.log(userAddressId);
-  const userAddress = await prisma.userAddress.findUnique({
-    where: { id: userAddressId },
-    include: { locations: true }
-  });
-
-  if (!userAddress) throw new Error('User address not found');
-
-  const deliveryCalculations = [];
-
-  for (const group of vendorGroups) {
-    const vendorWarehouse = group.warehouse;
-    
-    if (!vendorWarehouse) {
-      deliveryCalculations.push({
-        vendorId: group.vendor.id,
-        vendorName: group.vendor.name,
-        error: 'No warehouse configured',
-        shippingCost: 0,
-        courierProvider: null,
-        courierProviderId: null,
-        deliveryCharge: 0,
-        codCharge: 0,
-        estimatedDeliveryDays: null,
-        subtotal: group.subtotal,
-        items: group.items
-      });
-      continue;
+    if (!address) {
+      throw new AddressNotFoundError();
     }
 
-    // Calculate total weight of items from this vendor
-    const totalWeight = group.items.reduce((sum: number, item: any) => {
-      return sum + (item.variant.weight || 0.5) * item.quantity;
-    }, 0);
-
-    // Calculate COD amount if enabled
-    const codAmount = codEnabled ? group.subtotal : 0;
-
-    try {
-      // Call the service method (not controller)
-      // This calls selectBestCourier which compares Pathao, RedX, etc.
-      const quote = await courierService.selectBestCourier({
-        vendorWarehouseLocationId: vendorWarehouse.locationId,
-        customerDeliveryLocationId: userAddress.locationId,
-        orderWeight: totalWeight,
-        codAmount: codAmount,
-        deliveryType: 'NORMAL'
-      });
-
-      deliveryCalculations.push({
-        vendorId: group.vendor.id,
-        vendorName: group.vendor.name,
-        warehouseLocation: vendorWarehouse.location?.name || 'Unknown',
-        warehouseLocationId: vendorWarehouse.locationId,
-        deliveryLocation: userAddress.locations?.name || 'Unknown',
-        deliveryLocationId: userAddress.locationId,
-        totalWeight: Math.round(totalWeight * 100) / 100,
-        
-        // Courier information from quote
-        courierProviderId: quote.courierProviderId,
-        courierProvider: quote.courierName,
-        deliveryCharge: quote.pricing.deliveryCharge,
-        codCharge: quote.pricing.codCharge,
-        shippingCost: quote.pricing.totalCharge,
-        estimatedDeliveryDays: quote.pricing.estimatedDeliveryDays,
-        
-        // Order summary
-        subtotal: group.subtotal,
-        codAmount: codAmount,
-        
-        items: group.items.map((item: any) => ({
-          id: item.id,
-          productName: item.variant.product?.name || 'Unknown',
-          variantName: item.variant.name || 'Default',
-          quantity: item.quantity,
-          price: item.price,
-          weight: item.variant.weight || 0.5
-        }))
-      });
-
-    } catch (error: any) {
-      console.error(`Failed to get quote for vendor ${group.vendor.name}:`, error.message);
-      
-      // Fallback to manual calculation or default pricing
-      deliveryCalculations.push({
-        vendorId: group.vendor.id,
-        vendorName: group.vendor.name,
-        warehouseLocation: vendorWarehouse.location?.name || 'Unknown',
-        warehouseLocationId: vendorWarehouse.locationId,
-        deliveryLocation: userAddress.locations?.name || 'Unknown',
-        deliveryLocationId: userAddress.locationId,
-        totalWeight: Math.round(totalWeight * 100) / 100,
-        error: error.message,
-        shippingCost: 60, 
-        deliveryCharge: 60,
-        codCharge: 0,
-        courierProvider: 'Manual',
-        courierProviderId: null,
-        estimatedDeliveryDays: 3,
-        subtotal: group.subtotal,
-        codAmount: codAmount,
-        items: group.items.map((item: any) => ({
-          id: item.id,
-          productName: item.variant.product?.name || 'Unknown',
-          variantName: item.variant.name || 'Default',
-          quantity: item.quantity,
-          price: item.price,
-          weight: item.variant.weight || 0.5
-        }))
-      });
+    const cart = await prisma.carts.findFirst({
+      where: { userId },
+      include: {
+        cart_items: {
+          where: { isSelected: true },
+          select: { id: true, variantId: true, quantity: true, price: true },
+        },
+      },
+    });
+    if (!cart || cart.cart_items.length === 0) {
+      throw new Error("No items found in cart");
     }
+
+    const { quote } = await buildCheckoutQuote(prisma, {
+      userAddressId,
+      userLocationId: address.locationId,
+      lines: cart.cart_items.map((l) => ({
+        cartItemId: l.id,
+        variantId: l.variantId,
+        quantity: l.quantity,
+        cartPrice: l.price,
+      })),
+    });
+    return quote;
   }
 
-  return deliveryCalculations;
-}
-
-// Add this NEW PUBLIC METHOD that your controller expects
-async calculateDeliveryFees(
-  userId: string | undefined,
-  sessionId: string,
-  userAddressId: string,
-  codEnabled: boolean = false,
-  selectedItemIds?: string[]
-) {
-  // Input validation
-  if (!userAddressId) {
-    throw new Error('User address ID is required');
-  }
-
-  if (!sessionId && !userId) {
-    throw new Error('Session ID or User ID is required');
-  }
-
-  // 1. Get vendor groups from cart
-  const vendorGroups = await this.getVendorGroupsFromCart(
-    userId,
-    sessionId,
-    selectedItemIds
-  );
-  
-  // 2. Validate we have items
-  if (vendorGroups.length === 0) {
-    throw new Error('No items found in cart');
-  }
-  
-  // 3. Calculate delivery fees using your existing logic
-  return this.calculateDeliveryFeesForVendorGroups(
-    vendorGroups,
-    userAddressId,
-    codEnabled
-  );
-}
   /**
    * Toggle item selection (check/uncheck)
    */
@@ -735,7 +580,6 @@ async calculateDeliveryFees(
       throw new Error("Cart item not found");
     }
 
-    // Verify ownership
     if (userId && cartItem.carts.userId !== userId) {
       throw new Error("Unauthorized");
     }
@@ -823,7 +667,6 @@ async calculateDeliveryFees(
 
     const selectedItems = cart.items.filter((item) => item.isSelected);
 
-    // Group by vendor for multi-vendor checkout
     const itemsByVendor = selectedItems.reduce((acc, item) => {
       const vendorId = item.products.vendorId;
       if (!acc[vendorId]) {
@@ -831,13 +674,10 @@ async calculateDeliveryFees(
           vendorId,
           items: [],
           subtotal: 0,
-          totalWeight: 0,
         };
       }
       acc[vendorId].items.push(item);
       acc[vendorId].subtotal += item.itemTotal;
-      // Remove or adjust weight calculation if not in your schema
-      // acc[vendorId].totalWeight += item.product_variants.weight * item.quantity;
       return acc;
     }, {} as Record<string, any>);
 
@@ -853,7 +693,6 @@ async calculateDeliveryFees(
    * Merge guest cart into user cart (after login)
    */
   async mergeGuestCart(userId: string, guestSessionId: string) {
-    // Get guest cart
     const guestCart = await prisma.carts.findUnique({
       where: { sessionId: guestSessionId },
       include: { cart_items: true },
@@ -863,10 +702,8 @@ async calculateDeliveryFees(
       return { success: true, message: "No guest cart to merge" };
     }
 
-    // Get or create user cart
-    const userCart = await this.getOrCreateCart(userId);
+    await this.getOrCreateCart(userId);
 
-    // Merge items
     for (const guestItem of guestCart.cart_items) {
       try {
         await this.addToCart({
@@ -881,7 +718,6 @@ async calculateDeliveryFees(
       }
     }
 
-    // Delete guest cart
     await prisma.carts.delete({
       where: { id: guestCart.id },
     });
@@ -891,9 +727,6 @@ async calculateDeliveryFees(
 
   // ==================== WISHLIST METHODS ====================
 
-  /**
-   * Get or create wishlist for user
-   */
   async getOrCreateWishlist(userId: string, wishlistName?: string) {
     let wishlist = await prisma.wishlists.findFirst({
       where: { userId, isDefault: true },
@@ -921,10 +754,8 @@ async calculateDeliveryFees(
    * Add item to wishlist
    */
   async addToWishlist(data: AddToWishlistRequest) {
-    // Get or create wishlist
     const wishlist = await this.getOrCreateWishlist(data.userId);
 
-    // Check if product exists
     const product = await prisma.product.findUnique({
       where: { id: data.productId },
       include: {
@@ -939,7 +770,6 @@ async calculateDeliveryFees(
       throw new Error("Product not found");
     }
 
-    // Get variant price
     const variant = data.variantId
       ? product.variants.find((v) => v.id === data.variantId)
       : product.variants[0];
@@ -948,14 +778,15 @@ async calculateDeliveryFees(
       throw new Error("Product variant not found");
     }
 
-    // Check if item already exists
-    const existingItem = await prisma.wishlist_items.findUnique({
+    // variantId is nullable in the schema — use null, not "", so the
+    // compound-unique lookup actually matches rows with no variant set.
+    const normalizedVariantId = data.variantId ?? null;
+
+    const existingItem = await prisma.wishlist_items.findFirst({
       where: {
-        wishlistId_productId_variantId: {
-          wishlistId: wishlist.id,
-          productId: data.productId,
-          variantId: data.variantId || "",
-        },
+        wishlistId: wishlist.id,
+        productId: data.productId,
+        variantId: normalizedVariantId,
       },
     });
 
@@ -963,16 +794,15 @@ async calculateDeliveryFees(
       throw new Error("Item already in wishlist");
     }
 
-    // Create wishlist item
     const wishlistItem = await prisma.wishlist_items.create({
       data: {
         id: uuidv4(),
         wishlistId: wishlist.id,
         productId: data.productId,
-        variantId: data.variantId,
+        variantId: normalizedVariantId,
         priority: data.priority || 0,
         notes: data.notes,
-        priceWhenAdded: variant.price,
+        priceWhenAdded: Number(variant.price),
         notifyOnDiscount: data.notifyOnDiscount || false,
         notifyOnRestock: data.notifyOnRestock || false,
       },
@@ -995,7 +825,7 @@ async calculateDeliveryFees(
             sku: true,
             price: true,
             specialPrice: true,
-            stock: true,
+            availability: true,
           },
         },
       },
@@ -1040,7 +870,6 @@ async calculateDeliveryFees(
                 id: true,
                 name: true,
                 slug: true,
-
                 vendorId: true,
               },
             },
@@ -1050,7 +879,7 @@ async calculateDeliveryFees(
                 sku: true,
                 price: true,
                 specialPrice: true,
-                stock: true,
+                availability: true,
               },
             },
           },
@@ -1066,11 +895,23 @@ async calculateDeliveryFees(
       };
     }
 
-    // Enhance items with price changes
+    const variantIds = wishlist.wishlist_items
+      .map((item) => item.variantId)
+      .filter((id): id is string => !!id);
+    const stockMap = await this.getAvailableStockMap(variantIds);
+
     const items = wishlist.wishlist_items.map((item) => {
-      const currentPrice = item.product_variants?.price || 0;
+      const currentPrice = item.product_variants
+        ? Number(item.product_variants.price)
+        : 0;
       const priceChange = currentPrice - item.priceWhenAdded;
-      const priceChangePercent = (priceChange / item.priceWhenAdded) * 100;
+      const priceChangePercent = item.priceWhenAdded
+        ? (priceChange / item.priceWhenAdded) * 100
+        : 0;
+
+      const availableStock = item.variantId
+        ? stockMap.get(item.variantId) ?? 0
+        : 0;
 
       return {
         ...item,
@@ -1079,7 +920,9 @@ async calculateDeliveryFees(
         priceChangePercent: priceChangePercent.toFixed(2),
         isPriceDropped: priceChange < 0,
         isPriceIncreased: priceChange > 0,
-        isInStock: (item.product_variants?.stock || 0) > 0,
+        isInStock: item.variantId
+          ? availableStock > 0 && item.product_variants?.availability !== false
+          : true,
       };
     });
 
@@ -1099,16 +942,12 @@ async calculateDeliveryFees(
     userId: string,
     quantity: number = 1
   ) {
-    // Get wishlist item
     const wishlistItem = await prisma.wishlist_items.findUnique({
       where: { id: wishlistItemId },
       include: {
         wishlists: true,
         product_variants: {
-          select: {
-            id: true,
-            stock: true,
-          },
+          select: { id: true, availability: true },
         },
       },
     });
@@ -1121,21 +960,27 @@ async calculateDeliveryFees(
       throw new Error("Unauthorized");
     }
 
-    // Check stock
-    const variantStock = wishlistItem.product_variants?.stock || 0;
-    if (variantStock < quantity) {
-      throw new Error("Insufficient stock");
+    const variantId = wishlistItem.variantId || wishlistItem.product_variants?.id;
+    if (!variantId) {
+      throw new Error("No product variant associated with this wishlist item");
     }
 
-    // Add to cart
+    if (wishlistItem.product_variants?.availability === false) {
+      throw new Error("This product variant is currently unavailable");
+    }
+
+    const availableStock = await this.getAvailableStock(variantId);
+    if (availableStock < quantity) {
+      throw new Error(`Insufficient stock. Available: ${availableStock}`);
+    }
+
     const cartItem = await this.addToCart({
       userId,
       productId: wishlistItem.productId,
-      variantId: wishlistItem.variantId || wishlistItem.product_variants!.id,
+      variantId,
       quantity,
     });
 
-    // Remove from wishlist
     await prisma.wishlist_items.delete({
       where: { id: wishlistItemId },
     });

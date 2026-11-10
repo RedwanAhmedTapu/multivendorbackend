@@ -1,12 +1,17 @@
 // routes/vendor.order.routes.ts
 import { Router } from "express";
 import { VendorOrderController } from "../controllers/vendor.order.controller.ts";
-import { authenticateUser, authorizeRoles } from "../middlewares/auth.middleware.ts";
+import { authenticateUser } from "../middlewares/auth.middleware.ts";
+import { requireVendorPermission } from "../middlewares/permission.middleware.ts";
 
 const router = Router();
 
 // All routes require vendor authentication
-router.use(authenticateUser, authorizeRoles("VENDOR"));
+// Vendor owner, or the vendor's own active staff holding orderManagement (the
+// key the vendor sidebar uses for Orders). Admins, admin-side staff and
+// customers are refused. Handlers scope by req.user.vendorId, which for staff
+// is their own vendor (requireVendorPermission checks it matches).
+router.use(authenticateUser, requireVendorPermission("orderManagement"));
 
 // =====================================================
 // DASHBOARD & OVERVIEW
@@ -53,10 +58,12 @@ router.get("/:vendorOrderId", VendorOrderController.getById);
 router.patch("/:vendorOrderId/status", VendorOrderController.updateStatus);
 
 /**
- * Mark order for delivery — triggers CourierOrder creation + shipping label
- * Status must be PACKAGING before calling this
+ * Mark order for delivery — triggers real Pathao/RedX courier booking(s)
+ * (one per warehouse the order's allocations touch), physically dispatches
+ * reserved stock, and generates shipping label(s). Status must be
+ * PACKAGING (or SHIPPED, for a safe retry/resume) before calling this.
  * PATCH /api/vendor-orders/:vendorOrderId/mark-for-delivery
- * Body: { warehouseId: string, specialInstruction?: string }
+ * Body: { specialInstruction?: string }
  */
 router.patch(
   "/:vendorOrderId/mark-for-delivery",
@@ -71,6 +78,20 @@ router.patch(
 router.patch(
   "/:vendorOrderId/confirm-cod",
   VendorOrderController.confirmCodOrder
+);
+
+/**
+ * Vendor confirms physical receipt of a returned parcel.
+ * Requires the courier to have already reported "Returned To Merchant"
+ * (courierOrder.returnedAt must be set). This is the gate that unblocks
+ * admin.approveRefund()/processRefund()'s COGS-reversal accounting and
+ * restores physical warehouse stock if the item is sellable.
+ * PATCH /api/vendor-orders/:vendorOrderId/confirm-return-receipt
+ * Body: { sellable: boolean, note?: string }
+ */
+router.patch(
+  "/:vendorOrderId/confirm-return-receipt",
+  VendorOrderController.confirmReturnReceipt
 );
 
 // =====================================================

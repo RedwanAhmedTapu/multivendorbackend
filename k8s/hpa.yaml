@@ -1,0 +1,24 @@
+# k8s/hpa.yaml
+#
+# Auto-scales pod count between 3 and 10 based on CPU load — free, built
+# into Kubernetes. Requires the metrics-server addon (k3s ships it by
+# default; MicroK8s needs `microk8s enable metrics-server`).
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: multivendor-api-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: multivendor-api
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

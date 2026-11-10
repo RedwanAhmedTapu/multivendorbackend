@@ -7,6 +7,9 @@ import {
   SubscriptionPlan,
   VerificationStatus,
   AccountType,
+  BusinessType,
+  PaymentInstrumentType,
+  MobileBankingProvider,
 } from "@prisma/client";
 
 export interface CreateVendorRequest {
@@ -25,11 +28,17 @@ export interface UpdateVendorProfileRequest {
   avatar?: string;
   currentCommissionRate?: number;
   accountType?: AccountType;
+  businessType?: BusinessType;
   status?: VendorStatus;
 }
 
 export interface VendorCommissionRequest {
+  categoryId?: string;
   rate: number;
+  // NOTE: VendorCommission model does not currently have `note` or
+  // `effectiveFrom` columns. Either add them via migration, or remove
+  // these two fields (and the matching code in vendor.service.ts)
+  // if you don't need per-commission notes/effective dates.
   note?: string;
   effectiveFrom?: Date;
   effectiveTo?: Date;
@@ -103,8 +112,8 @@ export interface VendorWithDetails {
     isVerified: boolean;
   };
   personalInfo?: VendorPersonalInfo;
-  bankInfo?: VendorBankInfo;
-  idDocument?: VendorDocument;
+  paymentAccounts?: VendorPaymentAccount[]; // renamed from bankAccounts
+  documents?: VendorDocument[]; // was singular `idDocument`; kept as array to match actual usage
   pickupAddress?: VendorAddress;
   settings?: VendorSettings;
   subscription?: VendorSubscription;
@@ -114,6 +123,12 @@ export interface VendorWithDetails {
     products: number;
     orders: number;
     flags: number;
+    employees?: number;
+    documents?: number;
+    followers?: number;
+    commissions?: number;
+    payouts?: number;
+    adCampaigns?: number;
   };
 }
 
@@ -152,7 +167,10 @@ export interface FraudDetectionResult {
 
 export interface BulkCommissionUpdateRequest {
   vendorIds: string[];
+  categoryId?: string;
   rate: number;
+  // See note on VendorCommissionRequest — these fields need a matching
+  // schema migration on VendorCommission before they can be persisted.
   note?: string;
   effectiveFrom?: Date;
 }
@@ -212,8 +230,8 @@ export interface VendorPersonalInfoRequest {
   // Individual-specific fields
   idNumber?: string;
   idName?: string;
-  
-  // Business-specific fields  
+
+  // Business-specific fields
   companyName?: string;
   businessRegNo?: string;
   taxIdNumber?: string;
@@ -232,7 +250,6 @@ export interface VendorPersonalInfo {
   createdAt: Date;
   updatedAt: Date;
 }
-
 
 // ================================
 // ADDRESS TYPES
@@ -257,23 +274,81 @@ export interface VendorAddress {
 }
 
 // ================================
-// BANK INFO TYPES
+// PAYMENT ACCOUNT TYPES
+// (vendor.paymentAccounts -> VendorPaymentAccount, polymorphic:
+// BANK / MOBILE_BANKING / CARD / CASH)
 // ================================
 
-export interface VendorBankInfoRequest {
-  accountName: string;
-  accountNumber: string;
-  bankName: string;
-  branchName: string;
+export interface VendorBankAccountBank {
+  id: string;
+  name: string;
+  code?: string | null;
+  swiftCode?: string | null;
 }
 
-export interface VendorBankInfo {
+export interface VendorPaymentAccountBranch {
+  id: string;
+  bankId: string;
+  branchName: string;
+  routingNumber?: string | null;
+  isActive: boolean;
+  bank: VendorBankAccountBank;
+}
+
+export interface VendorBankAccountCOA {
+  id: string;
+  code: string;
+  name: string;
+}
+
+export interface AddVendorPaymentAccountRequest {
+  type: PaymentInstrumentType;
+
+  // BANK
+  bankBranchId?: string;
+  accountName?: string;
+  accountNumber?: string;
+
+  // MOBILE_BANKING
+  mobileProvider?: MobileBankingProvider;
+  walletNumber?: string;
+  walletKind?: string;
+
+  // CARD
+  cardProcessor?: string;
+  merchantId?: string;
+
+  // shared
+  label?: string;
+  isDefault?: boolean;
+}
+
+export interface VendorPaymentAccount {
   id: string;
   vendorId: string;
-  accountName: string;
-  accountNumber: string;
-  bankName: string;
-  branchName: string;
+  type: PaymentInstrumentType;
+
+  // BANK fields
+  bankBranchId?: string;
+  accountName?: string;
+  accountNumber?: string;
+
+  // MOBILE_BANKING fields
+  mobileProvider?: MobileBankingProvider;
+  walletNumber?: string;
+  walletKind?: string;
+
+  // CARD fields
+  cardProcessor?: string;
+  merchantId?: string;
+
+  // shared
+  label?: string;
+  isDefault: boolean;
+  isActive: boolean;
+  chartOfAccountId?: string;
+  bankBranch?: VendorPaymentAccountBranch;
+  chartOfAccount?: VendorBankAccountCOA;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -300,6 +375,9 @@ export interface VendorDocument {
   fileSize?: number;
   mimeType?: string;
   verificationStatus: DocumentVerificationStatus;
+  // NOTE: `rejectionReason` is not currently a column on VendorDocument
+  // in the Prisma schema. Add it via migration, or remove this field
+  // and the corresponding write in vendor.service.ts#updateDocumentStatus.
   rejectionReason?: string;
   createdAt: Date;
   updatedAt: Date;
@@ -345,7 +423,7 @@ export interface VendorOnboardingStatus {
   personalInfoComplete: boolean;
   addressComplete: boolean;
   bankInfoComplete: boolean;
-  documentsComplete: boolean; 
+  documentsComplete: boolean;
   overallComplete: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -392,7 +470,7 @@ export interface CompleteVendorProfile {
   storeName: string;
   avatar?: string;
   status: VendorStatus;
-  accountType: AccountType; // CHANGED: from sellerType to accountType
+  accountType: AccountType;
   verificationStatus: VerificationStatus;
   verifiedAt?: Date;
   rejectedAt?: Date;
@@ -400,7 +478,7 @@ export interface CompleteVendorProfile {
   currentCommissionRate?: number;
   createdAt: Date;
   updatedAt: Date;
-  
+
   user: {
     id: string;
     email?: string;
@@ -408,16 +486,16 @@ export interface CompleteVendorProfile {
     isActive: boolean;
     isVerified: boolean;
   };
-  
+
   personalInfo?: VendorPersonalInfo;
-  bankInfo?: VendorBankInfo;
-  documents?: VendorDocument[]; // CHANGED: Now an array of documents
+  paymentAccounts?: VendorPaymentAccount[]; // renamed from bankAccounts
+  documents?: VendorDocument[];
   pickupAddress?: VendorAddress;
   settings?: VendorSettings;
   subscription?: VendorSubscription;
   onboarding?: VendorOnboardingStatus;
   performance?: VendorPerformance;
-  
+
   _count: {
     products: number;
     orders: number;

@@ -5,8 +5,28 @@ import { sslcommerzConfig } from '../config/courier.ts';
 
 const prisma=new PrismaClient();
 
+/**
+ * Phase 4 (D2): vendor payout processing is DISABLED until it is rewritten —
+ * it marked DELIVERED orders REFUNDED, queried fields that do not exist on
+ * Order and sent the gateway password to a placeholder payout endpoint. No
+ * route reaches it (POST /api/payout/payouts/process answers 410) and the
+ * unreferenced cron.service.ts cannot run it either: every entry point throws.
+ */
+export class PayoutsDisabledError extends Error {
+  readonly code = 'PAYOUTS_DISABLED';
+  constructor() {
+    super('Vendor payout processing is disabled.');
+    this.name = 'PayoutsDisabledError';
+  }
+}
+// Typed `void` (not `never`) so the disabled method bodies stay type-checked.
+function payoutsDisabled(): void {
+  throw new PayoutsDisabledError();
+}
+
 export class PayoutService {
   async processVendorPayouts(vendorId: string, period: string = 'weekly') {
+    payoutsDisabled(); // Phase 4 (D2)
     // Get all delivered orders for the vendor in the period
     const orders = await prisma.order.findMany({
       where: {
@@ -84,6 +104,7 @@ export class PayoutService {
   }
 
   async processPayoutThroughSSLCommerz(vendorId: string, amount: number, payoutId: string) {
+    payoutsDisabled(); // Phase 4 (D2)
     try {
       // Get vendor bank details (would be stored in vendor profile)
       const vendor = await prisma.vendor.findUnique({
@@ -168,6 +189,7 @@ export class PayoutService {
   }
 
   async handleOrderCancellation(orderId: number, reason: string) {
+    payoutsDisabled(); // Phase 4 (D2)
     const order = await prisma.order.findUnique({
       where: { id: orderId },
       include: {

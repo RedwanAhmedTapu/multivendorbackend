@@ -41,92 +41,104 @@ export class VendorStorageService {
 
   // Upload file with quota check
   async uploadFile(params: {
-    vendorId: string;
-    file: Buffer;
-    fileName: string;
-    contentType: string;
-    fileType: "IMAGE" | "DOCUMENT";
-    productId?: string;
-    variantId?: string;
-  }) {
-    const fileSize = BigInt(params.file.length);
+  vendorId: string;
+  file: Buffer;
+  fileName: string;
+  contentType: string;
+  fileType: "IMAGE" | "DOCUMENT";
+  productId?: string;
+  variantId?: string;
+  folderId?: string | null;
+  documentType?: string | null;
+}) {
+  const fileSize = BigInt(params.file.length);
 
-    // Check quota
-    const quotaCheck = await this.checkQuota(params.vendorId, Number(fileSize));
-    if (!quotaCheck.allowed) {
-      throw new Error(quotaCheck.reason);
-    }
-
-    const timestamp = Date.now();
-
-    // Build dynamic fileKey (path in R2)
-    let folderPath = `vendors/${params.vendorId}`;
-
-    if (params.fileType === "IMAGE") {
-      if (params.productId) {
-        folderPath += `/products/${params.productId}`;
-        if (params.variantId) {
-          folderPath += `/variants/${params.variantId}`;
-        }
-      } else {
-        folderPath += `/images`;
-      }
-    } else if (params.fileType === "DOCUMENT") {
-      folderPath += `/documents`;
-    } else {
-      folderPath += `/others`;
-    }
-
-    const fileKey = `${folderPath}/${timestamp}-${params.fileName}`;
-
-    // Upload to R2
-    const uploadResult = await uploadToR2({
-      file: params.file,
-      key: fileKey,
-      contentType: params.contentType,
-      vendorId: params.vendorId,
-    });
-    console.log(uploadResult)
-
-    // Save in DB (transactional)
-    const storageFile = await prisma.$transaction(async (tx) => {
-      const file = await tx.storageFile.create({
-        data: {
-          vendorId: params.vendorId,
-          fileName: params.fileName,
-          fileKey,
-          fileSize,
-          mimeType: params.contentType,
-          fileType: params.fileType,
-          r2Bucket: R2_CONFIG.bucket,
-          r2Url: uploadResult.url,
-          productId: params.productId,
-          variantId: params.variantId,
-        },
-      });
-
-      await tx.vendorStorageUsage.update({
-        where: { vendorId: params.vendorId },
-        data: {
-          totalUsedBytes: { increment: fileSize },
-          totalFiles: { increment: 1 },
-          imageFiles:
-            params.fileType === "IMAGE" ? { increment: 1 } : undefined,
-          documentFiles:
-            params.fileType === "DOCUMENT" ? { increment: 1 } : undefined,
-          currentMonthUsage: { increment: fileSize },
-          lastCalculatedAt: new Date(),
-        },
-      });
-
-      return file;
-    });
-
-    return {
-      ...storageFile,
-      fileSize: storageFile.fileSize.toString(),
-    };
+  const quotaCheck = await this.checkQuota(params.vendorId, Number(fileSize));
+  if (!quotaCheck.allowed) {
+    throw new Error(quotaCheck.reason);
   }
+
+  if (params.folderId) {
+    const folder = await prisma.vendorFolder.findFirst({
+      where: { id: params.folderId, vendorId: params.vendorId, isActive: true },
+    });
+    if (!folder) {
+      throw new Error("Target folder not found");
+    }
+  }
+
+  const timestamp = Date.now();
+
+  // The original filename (e.g. "ChatGPT Image Sep 27, 2026, 05_43_15 PM.png")
+  // is whatever the OS/browser gave it — spaces, commas, unicode, anything.
+  // Sanitize before it becomes part of a storage key: strip diacritics,
+  // replace anything unsafe with "_", collapse repeats. This keeps future
+  // keys predictable everywhere they get used (URLs, validators, CSV
+  // exports, etc.) instead of relying on downstream code to tolerate
+  // arbitrary characters.
+  const sanitizedFileName = params.fileName
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9.\-_]+/g, "_")
+    .replace(/_{2,}/g, "_");
+
+  let folderPath = `vendors/${params.vendorId}`;
+  if (params.fileType === "IMAGE") {
+    folderPath += `/productimages`;
+  } else if (params.fileType === "DOCUMENT") {
+    folderPath += `/documents`;
+  } else {
+    folderPath += `/others`;
+  }
+
+  const fileKey = `${folderPath}/${timestamp}-${sanitizedFileName}`;
+
+  // R2-তে আপলোড এখনো আগের মতোই হবে
+  await uploadToR2({
+    file: params.file,
+    key: fileKey,
+    contentType: params.contentType,
+    vendorId: params.vendorId,
+  });
+
+  const storageFile = await prisma.$transaction(async (tx) => {
+    const file = await tx.storageFile.create({
+      data: {
+        vendorId: params.vendorId,
+        fileName: params.fileName,
+        fileKey,
+        fileSize,
+        mimeType: params.contentType,
+        fileType: params.fileType,
+        r2Bucket: R2_CONFIG.bucket,
+        r2Url: fileKey,              // 👈 এখন শুধু key/path সেভ হচ্ছে
+        productId: params.productId,
+        variantId: params.variantId,
+        folderId: params.folderId ?? null,
+        documentType: params.documentType ?? null,
+      },
+    });
+
+    await tx.vendorStorageUsage.update({
+      where: { vendorId: params.vendorId },
+      data: {
+        totalUsedBytes: { increment: fileSize },
+        totalFiles: { increment: 1 },
+        imageFiles: params.fileType === "IMAGE" ? { increment: 1 } : undefined,
+        documentFiles: params.fileType === "DOCUMENT" ? { increment: 1 } : undefined,
+        currentMonthUsage: { increment: fileSize },
+        lastCalculatedAt: new Date(),
+      },
+    });
+
+    return file;
+  });
+
+  return {
+    ...storageFile,
+    fileSize: storageFile.fileSize.toString(),
+  };
+}
 
   // Delete file and reclaim quota
   async deleteFile(fileId: string) {
@@ -203,88 +215,73 @@ export class VendorStorageService {
     };
   }
 
-  // Get vendor storage stats - FIXED VERSION
- async getStorageStats(vendorId: string) {
-  const usage = await prisma.vendorStorageUsage.findUnique({
-    where: { vendorId },
-    include: { vendor: { select: { id: true, storeName: true } } },
-  });
-  if (!usage) return null;
+  // Get vendor storage stats
+  async getStorageStats(vendorId: string) {
+    const usage = await prisma.vendorStorageUsage.findUnique({
+      where: { vendorId },
+      include: { vendor: { select: { id: true, storeName: true } } },
+    });
+    if (!usage) return null;
 
-  // Convert BigInt to Number
-  const usedBytes = Number(usage.totalUsedBytes);
-  const totalBytes = Number(usage.totalQuotaBytes);
-  const paidBytes = Number(usage.paidQuotaBytes);
+    const usedBytes = Number(usage.totalUsedBytes);
+    const totalBytes = Number(usage.totalQuotaBytes);
+    const paidBytes = Number(usage.paidQuotaBytes);
 
-  // Derived sizes
-  const usedMB = usedBytes / (1024 ** 2);
-  const usedGB = usedBytes / (1024 ** 3);
-  const totalGB = totalBytes / (1024 ** 3);
-  const paidQuotaGB = paidBytes / (1024 ** 3);
+    const usedMB = usedBytes / (1024 ** 2);
+    const usedGB = usedBytes / (1024 ** 3);
+    const totalGB = totalBytes / (1024 ** 3);
+    const paidQuotaGB = paidBytes / (1024 ** 3);
 
-  // Remaining space
-  const remainingBytes = totalBytes - usedBytes;
-  const remainingMB = remainingBytes / (1024 ** 2);
-  const remainingGB = remainingBytes / (1024 ** 3);
+    const remainingBytes = totalBytes - usedBytes;
+    const remainingMB = remainingBytes / (1024 ** 2);
+    const remainingGB = remainingBytes / (1024 ** 3);
 
-  // Usage percentage
-  const usagePercent = totalBytes > 0 ? (usedBytes / totalBytes) * 100 : 0;
+    const usagePercent = totalBytes > 0 ? (usedBytes / totalBytes) * 100 : 0;
 
-  // Helper function to truncate and keep fixed decimals
-  const truncate = (value: number, decimals: number) => {
-    const factor = 10 ** decimals;
-    return Math.floor(value * factor) / factor;
-  };
+    const truncate = (value: number, decimals: number) => {
+      const factor = 10 ** decimals;
+      return Math.floor(value * factor) / factor;
+    };
 
-  // Format used space
-  const [displayUsedSize, displayUsedUnit] =
-    usedMB < 1
-      ? [(usedBytes / 1024).toFixed(2), "KB"]
-      : usedGB < 1
-      ? [usedMB.toFixed(2), "MB"]
-      : [truncate(usedGB, 2).toFixed(2), "GB"];
+    const [displayUsedSize, displayUsedUnit] =
+      usedMB < 1
+        ? [(usedBytes / 1024).toFixed(2), "KB"]
+        : usedGB < 1
+        ? [usedMB.toFixed(2), "MB"]
+        : [truncate(usedGB, 2).toFixed(2), "GB"];
 
-  // Format remaining space
-  const [displayRemainingSize, displayRemainingUnit] =
-    remainingMB < 1
-      ? [(remainingBytes / 1024).toFixed(2), "KB"]
-      : remainingGB < 1
-      ? [remainingMB.toFixed(2), "MB"]
-      : [truncate(remainingGB, 2).toFixed(2), "GB"];
-  return {
-    // Raw bytes
-    usedBytes: usage.totalUsedBytes.toString(),
-    totalBytes: usage.totalQuotaBytes.toString(),
+    const [displayRemainingSize, displayRemainingUnit] =
+      remainingMB < 1
+        ? [(remainingBytes / 1024).toFixed(2), "KB"]
+        : remainingGB < 1
+        ? [remainingMB.toFixed(2), "MB"]
+        : [truncate(remainingGB, 2).toFixed(2), "GB"];
 
-    // Human-readable
-    usedSize: displayUsedSize,
-    usedUnit: displayUsedUnit,
-    usedMB: usedMB.toFixed(2),
-    usedGB: truncate(usedGB, 2).toFixed(2),
-    totalGB: truncate(totalGB, 2).toFixed(2),
+    return {
+      usedBytes: usage.totalUsedBytes.toString(),
+      totalBytes: usage.totalQuotaBytes.toString(),
 
-    // Remaining
-    remainingBytes,
-    remainingGB: truncate(remainingGB, 2).toFixed(2),
-    remainingSize: displayRemainingSize,
-    remainingUnit: displayRemainingUnit,
+      usedSize: displayUsedSize,
+      usedUnit: displayUsedUnit,
+      usedMB: usedMB.toFixed(2),
+      usedGB: truncate(usedGB, 2).toFixed(2),
+      totalGB: truncate(totalGB, 2).toFixed(2),
 
-    // Percent
-    usagePercent: usagePercent.toFixed(4),
+      remainingBytes,
+      remainingGB: truncate(remainingGB, 2).toFixed(2),
+      remainingSize: displayRemainingSize,
+      remainingUnit: displayRemainingUnit,
 
-    // Quota
-    freeQuotaGB: R2_CONFIG.freeQuotaGB,
-    paidQuotaGB: Number(paidQuotaGB.toFixed(2)),
+      usagePercent: usagePercent.toFixed(4),
 
-    // File counts
-    totalFiles: usage.totalFiles,
-    imageFiles: usage.imageFiles,
-    documentFiles: usage.documentFiles,
-  };
-}
+      freeQuotaGB: R2_CONFIG.freeQuotaGB,
+      paidQuotaGB: Number(paidQuotaGB.toFixed(2)),
 
-
-
+      totalFiles: usage.totalFiles,
+      imageFiles: usage.imageFiles,
+      documentFiles: usage.documentFiles,
+    };
+  }
 }
 
 export const vendorStorageService = new VendorStorageService();

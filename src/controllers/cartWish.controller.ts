@@ -1,6 +1,8 @@
 // controllers/cartWish.controller.ts
 import type { Request, Response, NextFunction } from 'express';
-import cartWishService from '../services/cartWish.service.ts';
+import cartWishService, { AddressNotFoundError } from '../services/cartWish.service.ts';
+import { analyticsRecorder, trackAnalytics } from '../modules/analytics/analytics.recorder.ts';
+import { analyticsContext } from '../modules/analytics/analytics.context.ts';
 
 export class CartWishController {
   // ==================== CART ENDPOINTS ====================
@@ -39,6 +41,18 @@ export class CartWishController {
         quantity,
         notes,
       });
+
+      // Business Advisor: recorded only after the cart was updated, from the
+      // stored line (product / vendor from the database). Never awaited.
+      const actx = analyticsContext(req as any);
+      const added: any = cartItem;
+      if (actx && added?.productId && added?.products?.vendorId) {
+        trackAnalytics(analyticsRecorder.addToCart(
+          actx,
+          { productId: added.productId, variantId: added.variantId ?? null, vendorId: added.products.vendorId, quantity: Number(quantity) || null },
+          req.body?.source,
+        ));
+      }
 
       res.status(201).json({
         success: true,
@@ -90,6 +104,13 @@ export class CartWishController {
         sessionId
       );
 
+      // Business Advisor: only real quantity changes (not selection / notes).
+      const updated: any = cartItem;
+      const qctx = quantity !== undefined ? analyticsContext(req as any) : null;
+      if (qctx && updated?.productId && updated?.products?.vendorId) {
+        trackAnalytics(analyticsRecorder.quantityChanged(qctx, { productId: updated.productId, variantId: updated.variantId ?? null, vendorId: updated.products.vendorId, quantity: updated.quantity ?? null }));
+      }
+
       res.status(200).json({
         success: true,
         message: 'Cart item updated',
@@ -111,7 +132,11 @@ export class CartWishController {
       const sessionId = req.sessionID || req.headers['x-session-id'] as string;
       const { itemId } = req.params;
 
+      // Business Advisor: read the line first (it is gone afterwards); recorded only if the removal succeeds.
+      const rctx = analyticsContext(req as any);
+      const removedLine = rctx ? await analyticsRecorder.cartLine(itemId) : null;
       const result = await cartWishService.removeFromCart(itemId, userId, sessionId);
+      if (rctx && removedLine) trackAnalytics(analyticsRecorder.removeFromCart(rctx, removedLine));
 
       res.status(200).json(result);
     } catch (error: any) {
@@ -121,14 +146,20 @@ export class CartWishController {
 async calculateDeliveryFees(req: Request, res: Response, next: NextFunction) {
   try {
     // @ts-ignore - Assuming auth middleware adds user
-    const userId = req.user?.id;
+    const userId = req.user?.rawId || req.user?.id; // same identity placeOrder uses
     const sessionId = req.sessionID || req.headers['x-session-id'] as string;
     
-    const { 
-      userAddressId, 
-      selectedItemIds, 
-      codEnabled = false 
-    } = req.body;
+    const userAddressId = (req.body?.userAddressId || req.query?.userAddressId) as string;
+    let selectedItemIds = req.body?.selectedItemIds;
+    if (!selectedItemIds && req.query?.selectedItemIds) {
+      if (Array.isArray(req.query.selectedItemIds)) {
+        selectedItemIds = req.query.selectedItemIds as string[];
+      } else if (typeof req.query.selectedItemIds === 'string') {
+        selectedItemIds = req.query.selectedItemIds.split(',').map((s: string) => s.trim()).filter(Boolean);
+      }
+    }
+    const codRaw = req.body?.codEnabled ?? req.query?.codEnabled;
+    const codEnabled = codRaw === true || codRaw === 'true' || codRaw === '1';
 
     // Validation
     if (!userAddressId) {
@@ -145,7 +176,6 @@ async calculateDeliveryFees(req: Request, res: Response, next: NextFunction) {
       });
     }
 
-    // This now works perfectly!
     const deliveryFees = await cartWishService.calculateDeliveryFees(
       userId,
       sessionId,
@@ -154,12 +184,32 @@ async calculateDeliveryFees(req: Request, res: Response, next: NextFunction) {
       selectedItemIds
     );
 
+    const errorMessage = !deliveryFees.complete
+      ? (deliveryFees.vendors.find((v: any) => v.error)?.error || 'Delivery quote incomplete — no courier available')
+      : undefined;
+
+    // Business Advisor: a quote that can't be fulfilled is a checkout failure for the vendors concerned.
+    if (!deliveryFees.complete && userId) {
+      const fctx = analyticsContext(req as any);
+      const failing = deliveryFees.vendors.filter((v: any) => v.error).map((v: any) => v.vendorId).filter(Boolean);
+      if (fctx) trackAnalytics(analyticsRecorder.checkoutFailed(fctx, userId, "SHIPPING_UNAVAILABLE", failing));
+    }
+
     res.status(200).json({
-      success: true,
-      message: 'Delivery fees calculated successfully',
+      success: deliveryFees.complete,
+      message: deliveryFees.complete
+        ? 'Delivery fees calculated successfully'
+        : errorMessage,
       data: deliveryFees,
     });
   } catch (error: any) {
+    if (error instanceof AddressNotFoundError) {
+      // @ts-ignore
+      const failedUserId = req.user?.rawId || req.user?.id;
+      const actx = failedUserId ? analyticsContext(req as any) : null;
+      if (actx) trackAnalytics(analyticsRecorder.checkoutFailed(actx, failedUserId, "ADDRESS_INVALID"));
+      return res.status(404).json({ success: false, code: error.code, message: error.message });
+    }
     next(error);
   }
 }

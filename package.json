@@ -5,8 +5,9 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "npx nodemon --watch \"src/**/*.ts\" --exec \"npx ts-node\" src/server.ts",
-    "build": "tsc",
-    "start": "node dist/index.js"
+    "build": "echo 'NOTE: tsconfig.json has noEmit:true and code imports use .ts extensions, so this project is NOT compiled to plain JS — it runs directly via tsx. This script intentionally does nothing; see the start script.'",
+    "start": "tsx src/server.ts",
+    "postinstall": "prisma generate"
   },
   "keywords": [],
   "author": "",
@@ -15,7 +16,8 @@
     "@aws-sdk/client-s3": "^3.901.0",
     "@aws-sdk/client-ses": "^3.922.0",
     "@aws-sdk/s3-request-presigner": "^3.901.0",
-    "@prisma/client": "^6.15.0",
+    "@prisma/client": "^6.16.1",
+    "@simplewebauthn/server": "^13.3.2",
     "axios": "^1.11.0",
     "bcrypt": "^6.0.0",
     "bcryptjs": "^3.0.2",
@@ -28,13 +30,17 @@
     "express": "^5.1.0",
     "express-rate-limit": "^8.1.0",
     "express-validator": "^7.3.0",
+    "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
     "nodemailer": "^7.0.6",
     "papaparse": "^5.5.3",
     "puppeteer": "^24.34.0",
     "redis": "^5.8.2",
+    "sharp": "^0.35.3",
     "socket.io": "^4.8.1",
+    "tsx": "^4.19.2",
+    "ua-parser-js": "^2.0.10",
     "xlsx": "^0.18.5",
     "zod": "^4.1.8"
   },
@@ -53,7 +59,7 @@
     "@types/uuid": "^10.0.0",
     "@types/xlsx": "^0.0.35",
     "nodemon": "^3.1.10",
-    "prisma": "^6.16.1",
+    "prisma": "6.16.1",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.2"
   },

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { AccountingController } from '../controllers/accounting.controller.ts';
 import { prisma } from '../config/prisma.ts';
 import { authenticateUser, authorizeRoles } from '../middlewares/auth.middleware.ts';
+import { blockVendorEmployees } from '../middlewares/permission.middleware.ts';
 import { Decimal } from '@prisma/client/runtime/library';
 
 const router = Router();
@@ -11,8 +12,15 @@ const controller = new AccountingController();
 // MIDDLEWARE
 // ============================================
 
-// Admin-only middleware
-const adminOnly = authorizeRoles('ADMIN', 'EMPLOYEE');
+// Admin-only middleware.
+// S-1 fix (2026-11-07): vendor staff authenticate as role EMPLOYEE **with a
+// vendorId** (auth.middleware.ts resolves it from the Employee table). Bare
+// authorizeRoles('ADMIN','EMPLOYEE') therefore let ANY vendor's employee
+// seed the platform COA, post/reverse vouchers on any entity, and read
+// every entity's reports. blockVendorEmployees (the same guard used by the
+// courier/admin routers) refuses EMPLOYEE-with-vendorId; admin-side staff
+// (EMPLOYEE, vendorId null) keep full access.
+const adminOnly = [authorizeRoles('ADMIN', 'EMPLOYEE'), blockVendorEmployees];
 
 // Vendor-only middleware
 const vendorOnly = (req: any, res: any, next: any) => {
@@ -46,14 +54,17 @@ const vendorOnly = (req: any, res: any, next: any) => {
 };
 
 // Entity-specific access middleware
+// S-1 fix (2026-11-07): an EMPLOYEE with a vendorId is VENDOR STAFF, not
+// admin-side — they now take the vendor branch (scoped to their own
+// vendorId) instead of the unrestricted admin branch.
 const entityAccess = (req: any, res: any, next: any) => {
   const user = req.user;
 
-  if (user.role === 'ADMIN' || user.role === 'EMPLOYEE') {
-    // Admin/Employee can access all entities
+  if (user.role === 'ADMIN' || (user.role === 'EMPLOYEE' && !user.vendorId)) {
+    // Admin / admin-side employee can access all entities
     next();
-  } else if (user.role === 'VENDOR') {
-    // Vendor can only access their own entity
+  } else if (user.role === 'VENDOR' || (user.role === 'EMPLOYEE' && user.vendorId)) {
+    // Vendor (or vendor staff) can only access their own entity
     const entityId = req.params.entityId || req.query.entityId || req.body.entityId;
     
     if (entityId && entityId !== user.vendorId) {
@@ -73,12 +84,69 @@ const entityAccess = (req: any, res: any, next: any) => {
     
     next();
   } else {
-    res.status(403).json({ 
-      success: false, 
-      message: 'Access denied: Insufficient permissions' 
+    res.status(403).json({
+      success: false,
+      message: 'Access denied: Insufficient permissions'
     });
   }
 };
+
+// PHASE 2 BATCH 1C-7A (D3): vendors are HARD-SCOPED to their own accounting
+// entity on the voucher-list and financial-report endpoints — regardless of
+// any entityId/entityType the client supplies. An explicit attempt to read a
+// non-vendor entity is rejected; otherwise the scope is force-overridden.
+// Exported for the security regression tests.
+//
+// S-1 fix (2026-11-07): vendor staff (EMPLOYEE with a vendorId) are clamped
+// exactly like vendors — previously only role === 'VENDOR' was scoped, so
+// vendor employees sailed through with admin-like freedom. The clamp now
+// also covers req.body (POST routes such as /vouchers/manual/vendor), not
+// just req.query.
+export const vendorOwnEntityScope = (req: any, res: any, next: any) => {
+  const role = String(req.user?.role ?? '').toUpperCase();
+  const isVendorSide = role === 'VENDOR' || (role === 'EMPLOYEE' && req.user?.vendorId);
+  if (isVendorSide) {
+    if (req.query.entityType && req.query.entityType !== 'VENDOR') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied: Vendors may only access their own accounting entity'
+      });
+    }
+    if (req.body && typeof req.body === 'object' && req.body.entityType && req.body.entityType !== 'VENDOR') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied: Vendors may only access their own accounting entity'
+      });
+    }
+    req.query.entityType = 'VENDOR';
+    req.query.entityId = req.user.vendorId;
+    if (req.body && typeof req.body === 'object') {
+      req.body.entityType = 'VENDOR';
+      req.body.entityId = req.user.vendorId;
+    }
+  }
+  next();
+};
+
+// ============================================
+// CHART OF ACCOUNTS SEEDING (Admin only)
+// ============================================
+
+// Seed platform's core COA (idempotent, run once at platform setup)
+router.post(
+  '/chart-of-accounts/seed/platform',
+  authenticateUser,
+  adminOnly,
+  controller.seedPlatformCOA
+);
+
+// Seed a vendor's core COA (idempotent, run at vendor onboarding)
+router.post(
+  '/chart-of-accounts/seed/vendor/:vendorId',
+  authenticateUser,
+  adminOnly,
+  controller.seedVendorCOA
+);
 
 // ============================================
 // CHART OF ACCOUNTS ROUTES
@@ -87,35 +155,41 @@ const entityAccess = (req: any, res: any, next: any) => {
 // Create new account (Admin only)
 router.post(
   '/chart-of-accounts',
-  
+  authenticateUser,
+  adminOnly,
   controller.createChartOfAccount
 );
 
 // Update account (Admin only)
 router.put(
   '/chart-of-accounts/:id',
- 
+  authenticateUser,
+  adminOnly,
   controller.updateChartOfAccount
 );
 
 // Delete account (Admin only)
 router.delete(
   '/chart-of-accounts/:id',
- 
+  authenticateUser,
+  adminOnly,
   controller.deleteChartOfAccount
 );
 
 // Get chart of accounts (with entity access control)
 router.get(
   '/chart-of-accounts',
- 
+  authenticateUser,
+  entityAccess,
+  vendorOwnEntityScope,
   controller.getChartOfAccounts
 );
 
 // Get single account details
 router.get(
   '/chart-of-accounts/:id',
- 
+  authenticateUser,
+  entityAccess,
   controller.getChartOfAccountById
 );
 
@@ -126,56 +200,89 @@ router.get(
 // Create manual voucher (Admin)
 router.post(
   '/vouchers/manual',
- 
+  authenticateUser,
+  adminOnly,
   controller.createVoucher
 );
 
 // Create manual voucher for vendors
 router.post(
   '/vouchers/manual/vendor',
-  
+  authenticateUser,
+  entityAccess,
+  vendorOwnEntityScope,
   controller.createVoucher
 );
 
 // Get single voucher
 router.get(
   '/vouchers/:id',
- 
+  authenticateUser,
+  entityAccess,
   controller.getVoucher
 );
 
 // List vouchers with filters
 router.get(
   '/vouchers',
- 
+  authenticateUser,
+  entityAccess,
+  vendorOwnEntityScope,
   controller.getVouchers
 );
 
 // Post voucher (make it permanent)
 router.post(
   '/vouchers/:id/post',
- 
+  authenticateUser,
+  adminOnly,
   controller.postVoucher
 );
 
 // Lock voucher (Admin only)
 router.post(
   '/vouchers/:id/lock',
- 
+  authenticateUser,
+  adminOnly,
   controller.lockVoucher
 );
 
 // Reverse voucher (Admin only)
 router.post(
   '/vouchers/:id/reverse',
- 
+  authenticateUser,
+  adminOnly,
   controller.reverseVoucher
 );
+
 // Cancel voucher (Admin only)
 router.post(
   '/vouchers/:id/cancel',
- 
+  authenticateUser,
+  adminOnly,
   controller.cancelVoucher
+);
+
+// ============================================
+// VOUCHER APPROVAL WORKFLOW (Admin/Accountant only)
+// (spec: fraud-variant chargeback, ADJ-1 — vouchers held as
+// approvalStatus=PENDING can ONLY be posted through this route)
+// ============================================
+
+// Approve and post a PENDING voucher
+router.post(
+  '/vouchers/:id/approve',
+  authenticateUser,
+  adminOnly,
+  controller.approveAndPostVoucher
+);
+
+// Reject a PENDING voucher
+router.post(
+  '/vouchers/:id/reject',
+  authenticateUser,
+  adminOnly,
+  controller.rejectVoucher
 );
 
 // ============================================
@@ -185,9 +292,11 @@ router.post(
 // Trigger auto voucher creation
 router.post(
   '/auto-voucher/:eventType',
-  
+  authenticateUser,
+  adminOnly,
   controller.triggerAutoVoucher
 );
+
 // Purchase order confirmed → triggers purchase voucher
 router.post('/webhooks/purchase-created', (_req, res) => {
   // This webhook is intentionally disabled.
@@ -227,44 +336,50 @@ router.post('/webhooks/purchase-payment', (_req, res) => {
 
 // Stock movement events (adjustment / damage / transfer / sell_damage)
 // A single endpoint dispatches based on movementType
-router.post('/webhooks/stock-movement', async (req, res) => {
-  try {
-    const { movementType, ...rest } = req.body;
+router.post(
+  '/webhooks/stock-movement',
+  authenticateUser,
+  adminOnly,
+  async (req: any, res: any) => {
+    try {
+      const { movementType, ...rest } = req.body;
 
-    const eventMap: Record<string, string> = {
-      ADJUSTMENT:  'STOCK_ADJUSTMENT',
-      DAMAGE:      'DAMAGE_RECORDED',
-      TRANSFER:    'STOCK_TRANSFER',
-      SELL_DAMAGE: 'DAMAGE_STOCK_SOLD',
-    };
+      const eventMap: Record<string, string> = {
+        ADJUSTMENT:  'STOCK_ADJUSTMENT',
+        DAMAGE:      'DAMAGE_RECORDED',
+        TRANSFER:    'STOCK_TRANSFER',
+        SELL_DAMAGE: 'DAMAGE_STOCK_SOLD',
+      };
 
-    const eventType = eventMap[movementType];
-    if (!eventType) {
-      return res.status(400).json({ success: false, message: `No accounting event for movement type: ${movementType}` });
+      const eventType = eventMap[movementType];
+      if (!eventType) {
+        return res.status(400).json({ success: false, message: `No accounting event for movement type: ${movementType}` });
+      }
+
+      const result = await controller.triggerAutoVoucher(
+        {
+          params: { eventType },
+          body: {
+            ...rest,
+            avgCost: rest.avgCost ? new Decimal(rest.avgCost) : undefined,
+            saleAmount: rest.saleAmount ? new Decimal(rest.saleAmount) : undefined,
+            logisticsCost: rest.logisticsCost ? new Decimal(rest.logisticsCost) : undefined,
+          },
+        } as any,
+        res
+      );
+    } catch (error: any) {
+      res.status(400).json({ success: false, message: error.message });
     }
-
-    const result = await controller.triggerAutoVoucher(
-      {
-        params: { eventType },
-        body: {
-          ...rest,
-          avgCost: rest.avgCost ? new Decimal(rest.avgCost) : undefined,
-          saleAmount: rest.saleAmount ? new Decimal(rest.saleAmount) : undefined,
-          logisticsCost: rest.logisticsCost ? new Decimal(rest.logisticsCost) : undefined,
-        },
-      } as any,
-      res
-    );
-  } catch (error: any) {
-    res.status(400).json({ success: false, message: error.message });
   }
-});
+);
 
 // Webhook endpoint for order confirmation
 router.post(
   '/webhooks/order-confirmed',
- 
-  async (req, res) => {
+  authenticateUser,
+  adminOnly,
+  async (req: any, res: any) => {
     try {
       const { orderId, vendorId, customerId, amount, commissionRate } = req.body;
       
@@ -292,8 +407,9 @@ router.post(
 // Webhook endpoint for payment received
 router.post(
   '/webhooks/payment-received',
- 
-  async (req, res) => {
+  authenticateUser,
+  adminOnly,
+  async (req: any, res: any) => {
     try {
       const result = await controller.triggerAutoVoucher(
         { params: { eventType: 'PAYMENT_RECEIVED' }, body: req.body } as any,
@@ -312,42 +428,53 @@ router.post(
 // Trial Balance
 router.get(
   '/reports/trial-balance',
- 
+  authenticateUser,
+  entityAccess,
+  vendorOwnEntityScope,
   controller.getTrialBalance
 );
 
 // Profit & Loss Statement
 router.get(
   '/reports/profit-loss',
- 
+  authenticateUser,
+  entityAccess,
+  vendorOwnEntityScope,
   controller.getProfitAndLoss
 );
 
 // Balance Sheet
 router.get(
   '/reports/balance-sheet',
- 
+  authenticateUser,
+  entityAccess,
+  vendorOwnEntityScope,
   controller.getBalanceSheet
 );
 
 // General Ledger
 router.get(
   '/reports/ledger',
- 
+  authenticateUser,
+  entityAccess,
+  vendorOwnEntityScope,
   controller.getLedger
 );
 
 // Vendor Payable Report (Admin only)
 router.get(
   '/reports/vendor-payables',
- 
+  authenticateUser,
+  adminOnly,
   controller.getVendorPayableReport
 );
 
 // Account-specific ledger report
 router.get(
   '/reports/account-ledger/:accountId',
- 
+  authenticateUser,
+  entityAccess,
+  vendorOwnEntityScope,
   async (req, res) => {
     const { accountId } = req.params;
     const { startDate, endDate, page, limit } = req.query;
@@ -365,21 +492,25 @@ router.get(
 // Create accounting period
 router.post(
   '/accounting-periods',
- 
+  authenticateUser,
+  adminOnly,
   controller.createAccountingPeriod
 );
 
 // Close accounting period
 router.post(
   '/accounting-periods/:id/close',
- 
+  authenticateUser,
+  adminOnly,
   controller.closeAccountingPeriod
 );
 
 // Get accounting periods
 router.get(
   '/accounting-periods',
- 
+  authenticateUser,
+  entityAccess,
+  vendorOwnEntityScope,
   async (req, res) => {
     try {
       const { entityType, entityId } = req.query;
@@ -411,8 +542,37 @@ router.get(
 
 router.get(
   '/audit-logs',
- 
+  authenticateUser,
+  adminOnly,
   controller.getAuditLogs
+);
+
+// ============================================
+// RECONCILIATION ROUTES (Admin only)
+// (spec Phase 10 — §10.1-10.4: drift detection, orphaned vouchers,
+// unreversed refunds. These back the settlement batch hard-stop and
+// should also be wired into a scheduled reconciliation job.)
+// ============================================
+
+router.get(
+  '/reconciliation/drift',
+  authenticateUser,
+  adminOnly,
+  controller.getDriftReport
+);
+
+router.get(
+  '/reconciliation/orphaned-vouchers',
+  authenticateUser,
+  adminOnly,
+  controller.getOrphanedVouchers
+);
+
+router.get(
+  '/reconciliation/unreversed-refunds',
+  authenticateUser,
+  adminOnly,
+  controller.getUnreversedRefunds
 );
 
 // ============================================
@@ -654,7 +814,8 @@ router.get(
 
 router.get(
   '/admin/dashboard',
- 
+  authenticateUser,
+  adminOnly,
   async (req: any, res: any) => {
     try {
       // Platform balance sheet
@@ -743,8 +904,9 @@ router.get(
 // Admin - All vendor payables detailed
 router.get(
   '/admin/vendor-payables/detailed',
- 
-  async (req, res) => {
+  authenticateUser,
+  adminOnly,
+  async (req: any, res: any) => {
     try {
       const vendorPayables = await prisma.vendorPayable.findMany({
         orderBy: [{ balance: 'desc' }],
@@ -801,8 +963,9 @@ router.get(
 // Admin - Settlement reconciliation
 router.get(
   '/admin/settlements',
- 
-  async (req, res) => {
+  authenticateUser,
+  adminOnly,
+  async (req: any, res: any) => {
     try {
       const { status } = req.query;
       
@@ -832,7 +995,7 @@ router.get(
 // UTILITY ROUTES
 // ============================================
 
-// Health check
+// Health check (public — no auth needed)
 router.get('/health', (req, res) => {
   res.json({
     success: true,
@@ -844,7 +1007,9 @@ router.get('/health', (req, res) => {
 // Get accounting statistics
 router.get(
   '/statistics',
- 
+  authenticateUser,
+  entityAccess,
+  vendorOwnEntityScope,
   async (req, res) => {
     try {
       const { entityType, entityId } = req.query;

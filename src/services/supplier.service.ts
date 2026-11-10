@@ -4,7 +4,7 @@ import type {
   CreateSupplierDTO,
   UpdateSupplierDTO,
   SupplierListQuery,
-} from '../types/erp.types.ts';
+} from '../types/supplier.types';
 
 const prisma = new PrismaClient();
 

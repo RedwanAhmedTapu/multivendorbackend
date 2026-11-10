@@ -1,8 +1,192 @@
 import type { Request, Response, NextFunction } from 'express';
 import courierService from '../services/courier.service.ts';
+import warehouseCourierPickupService, {
+  PickupMappingError,
+  type PickupActor,
+} from '../services/warehouse-courier-pickup.service.ts';
 import { PrismaClient } from '@prisma/client';
+import { sanitizeCourierError } from '../lib/courier/redact.ts';
+// 1C-11 (B1): the credential response contract lives in one reusable module so
+// every handler — list, single get, create, update AND activate/deactivate —
+// applies it. See src/lib/courier/credentials.ts.
+import { sanitizeCredential, sanitizeCredentials } from '../lib/courier/credentials.ts';
 
 const prisma = new PrismaClient();
+
+// ==================== WAREHOUSE PICKUP MAPPING HELPERS ====================
+
+function pickupActor(req: Request): PickupActor {
+  const u = (req as any).user;
+  return { userId: u?.rawId ?? u?.id ?? null, role: u?.role ?? null, vendorId: u?.vendorId ?? null };
+}
+
+/**
+ * Phase 0: the vendor scope of a /vendor/* courier route — set by
+ * requireVendorScope from the authenticated identity only. A client-supplied
+ * vendorId (body or query) is ignored; a mismatch is logged (ids only).
+ * These routes are deprecated, so every response carries `Deprecation: true`.
+ */
+function vendorRouteScope(req: Request, res: Response, route: string): string | undefined {
+  res.setHeader('Deprecation', 'true');
+  const scope: string | undefined = (req as any).vendorScope;
+  const claimed = req.body?.vendorId ?? req.query?.vendorId;
+  if (claimed !== undefined && claimed !== scope) {
+    console.warn('courier.vendor_route.scope_mismatch', { route, scopeVendorId: scope, ignoredVendorId: String(claimed) });
+  }
+  return scope;
+}
+
+/** PickupMappingError → its HTTP status; anything else → the error middleware. */
+function handlePickupError(error: any, res: Response, next: NextFunction) {
+  if (error instanceof PickupMappingError) {
+    return res.status(error.status).json({ success: false, code: error.code, message: error.message });
+  }
+  return next(sanitizeCourierError(error));
+}
+
+type ProviderStoreInfo = {
+  storeId: string;
+  storeName: string | null;
+  cityId: string | null;
+  zoneId: string | null;
+  areaId: string | null;
+  /** Provider-reported active/approved flag when the provider exposes one. */
+  active: boolean | null;
+  raw: any;
+};
+
+const toStr = (v: any): string | null => (v === undefined || v === null || v === '' ? null : String(v));
+
+/**
+ * Look a store up in the provider account behind the PLATFORM credential of
+ * `environment` (the account quote/booking use). Returns null when the account
+ * does not list it. NOTE: the Pathao store listing is read as returned (first
+ * page) — a store beyond it is reported as not found.
+ */
+async function findProviderStore(
+  providerName: string,
+  courierProviderId: string,
+  environment: 'SANDBOX' | 'PRODUCTION',
+  storeId: string,
+): Promise<ProviderStoreInfo | null> {
+  if (providerName === 'Pathao') {
+    const res: any = await courierService.pathaoGetStores(courierProviderId, environment);
+    const list: any[] = Array.isArray(res?.data?.data) ? res.data.data : Array.isArray(res?.data) ? res.data : [];
+    const s = list.find((x) => String(x?.store_id) === storeId);
+    if (!s) return null;
+    return {
+      storeId,
+      storeName: toStr(s.store_name),
+      cityId: toStr(s.city_id),
+      zoneId: toStr(s.zone_id),
+      areaId: toStr(s.area_id),
+      active: s.is_active === undefined || s.is_active === null ? null : Boolean(Number(s.is_active)),
+      raw: s,
+    };
+  }
+  if (providerName === 'RedX') {
+    const res: any = await courierService.redxGetPickupStores(courierProviderId, environment);
+    const list: any[] = Array.isArray(res?.pickup_stores) ? res.pickup_stores : [];
+    const s = list.find((x) => String(x?.id) === storeId);
+    if (!s) return null;
+    return { storeId, storeName: toStr(s.name), cityId: null, zoneId: null, areaId: toStr(s.area_id), active: null, raw: s };
+  }
+  return null;
+}
+
+/** Platform credential row for (provider, environment) — the account the store lives in. */
+async function platformCredentialFor(courierProviderId: string, environment: 'SANDBOX' | 'PRODUCTION') {
+  const credential = await courierService.getPlatformCourierCredentials(courierProviderId, environment);
+  if (!credential) {
+    throw new PickupMappingError(404, 'CREDENTIAL_NOT_FOUND', `No active platform ${environment} credential for this courier provider`);
+  }
+  return credential;
+}
+
+/**
+ * Store payload for a store created FOR a warehouse: the provider city/zone/area
+ * come from the warehouse location's pickup serviceable-area mapping. Values the
+ * admin supplied must agree with it (a store elsewhere would make the courier
+ * pick up from the wrong place).
+ */
+async function storeDataForWarehouse(
+  providerName: 'Pathao' | 'RedX',
+  courierProviderId: string,
+  locationId: string,
+  storeData: Record<string, any>,
+) {
+  const area = await courierService.getPickupServiceableArea(courierProviderId, locationId);
+  if (!area) {
+    throw new PickupMappingError(422, 'WAREHOUSE_LOCATION_NOT_MAPPED', `${providerName} has no pickup area mapping for this warehouse's location`);
+  }
+  const derived: Record<string, number> =
+    providerName === 'Pathao'
+      ? { city_id: Number(area.courierCityId), zone_id: Number(area.courierZoneId), area_id: Number(area.courierAreaId) }
+      : { area_id: Number(area.courierAreaId) };
+  for (const [key, value] of Object.entries(derived)) {
+    if (!Number.isFinite(value)) {
+      throw new PickupMappingError(422, 'WAREHOUSE_LOCATION_NOT_MAPPED', `${providerName} area mapping for this warehouse's location has no ${key}`);
+    }
+    const given = storeData?.[key];
+    if (given !== undefined && given !== null && given !== '' && Number(given) !== value) {
+      throw new PickupMappingError(400, 'STORE_AREA_MISMATCH', `storeData.${key} does not match the warehouse location's ${providerName} area (${value})`);
+    }
+  }
+  return { ...storeData, ...derived };
+}
+
+/**
+ * Proves a provider store sits in the warehouse's provider pickup location
+ * (the warehouse location's pickup serviceable-area mapping):
+ *   Pathao → city_id + zone_id + area_id, RedX → area_id.
+ * A value the provider data does not carry cannot be proven → rejected
+ * (never assumed to match).
+ */
+async function assertStoreMatchesWarehouseLocation(
+  providerName: string,
+  courierProviderId: string,
+  warehouseLocationId: string,
+  store: { cityId: string | null; zoneId: string | null; areaId: string | null },
+) {
+  const area = await courierService.getPickupServiceableArea(courierProviderId, warehouseLocationId);
+  if (!area) {
+    throw new PickupMappingError(422, 'WAREHOUSE_LOCATION_NOT_MAPPED', `${providerName} has no pickup area mapping for this warehouse's location`);
+  }
+  const checks: [string, string | null, string | null][] =
+    providerName === 'Pathao'
+      ? [
+          ['city_id', store.cityId, toStr(area.courierCityId)],
+          ['zone_id', store.zoneId, toStr(area.courierZoneId)],
+          ['area_id', store.areaId, toStr(area.courierAreaId)],
+        ]
+      : [['area_id', store.areaId, toStr(area.courierAreaId)]];
+  for (const [field, storeValue, warehouseValue] of checks) {
+    if (warehouseValue === null) {
+      throw new PickupMappingError(422, 'WAREHOUSE_LOCATION_NOT_MAPPED', `${providerName} area mapping for this warehouse's location has no ${field}`);
+    }
+    if (storeValue === null) {
+      throw new PickupMappingError(
+        422,
+        'STORE_LOCATION_UNVERIFIABLE',
+        `${providerName} does not report the store's ${field}, so it cannot be proven to be at this warehouse's location`,
+      );
+    }
+    if (storeValue !== warehouseValue) {
+      throw new PickupMappingError(
+        422,
+        'STORE_LOCATION_MISMATCH',
+        `${providerName} store ${field} ${storeValue} does not match the warehouse location's ${field} ${warehouseValue}`,
+      );
+    }
+  }
+}
+
+/** Store id returned by a provider "create store" call, if the provider returns one. */
+function createdStoreId(providerName: string, result: any): string | null {
+  if (providerName === 'Pathao') return toStr(result?.data?.store_id ?? result?.store_id);
+  if (providerName === 'RedX') return toStr(result?.id ?? result?.data?.id ?? result?.pickup_store?.id);
+  return null;
+}
 
 export class CourierController {
   // ==================== COURIER PROVIDER ENDPOINTS ====================
@@ -37,7 +221,7 @@ export class CourierController {
         count: result.length,
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -63,7 +247,7 @@ export class CourierController {
         data: result,
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -121,7 +305,7 @@ export class CourierController {
         data: result,
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -142,7 +326,7 @@ export class CourierController {
         data: result,
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -161,7 +345,7 @@ export class CourierController {
         message: 'Courier provider deleted successfully',
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -181,7 +365,7 @@ export class CourierController {
         data: result,
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -213,7 +397,8 @@ export class CourierController {
         filters.vendorId = vendorId === 'null' ? null : (vendorId as string);
       }
 
-      const result = await courierService.getAllCredentials(filters);
+      const rows = await courierService.getAllCredentials(filters);
+      const result = sanitizeCredentials(rows);
 
       res.status(200).json({
         success: true,
@@ -221,7 +406,7 @@ export class CourierController {
         count: result.length,
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -233,7 +418,7 @@ export class CourierController {
     try {
       const { credentialId } = req.params;
 
-      const result = await courierService.getCredentialById(credentialId);
+      const result = sanitizeCredential(await courierService.getCredentialById(credentialId));
 
       if (!result) {
         return res.status(404).json({
@@ -247,7 +432,7 @@ export class CourierController {
         data: result,
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -296,10 +481,10 @@ export class CourierController {
       res.status(201).json({
         success: true,
         message: 'Courier credentials created successfully',
-        data: result,
+        data: sanitizeCredential(result),
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -320,10 +505,10 @@ export class CourierController {
       res.status(200).json({
         success: true,
         message: 'Courier credentials updated successfully',
-        data: result,
+        data: sanitizeCredential(result),
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -342,7 +527,7 @@ export class CourierController {
         message: 'Courier credentials deleted successfully',
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -359,10 +544,13 @@ export class CourierController {
       res.status(200).json({
         success: true,
         message: `Credentials ${result.isActive ? 'activated' : 'deactivated'} successfully`,
-        data: result,
+        // The row the service just wrote — sanitized like every other credential
+        // response. This was the one handler that returned the raw record, so the
+        // activate/deactivate reply carried the secret columns (1C-11 gap).
+        data: sanitizeCredential(result),
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -374,7 +562,7 @@ export class CourierController {
     try {
       const { credentialId } = req.params;
 
-      const credential = await prisma.courier_credentials.findUnique({
+      const credential = await prisma.courierCredential.findUnique({
         where: { id: credentialId },
         include: { courier_providers: true },
       });
@@ -423,7 +611,7 @@ export class CourierController {
         },
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -435,7 +623,7 @@ export class CourierController {
     try {
       const { credentialId } = req.params;
 
-      const credential = await prisma.courier_credentials.findUnique({
+      const credential = await prisma.courierCredential.findUnique({
         where: { id: credentialId },
         include: { courier_providers: true },
       });
@@ -474,7 +662,7 @@ export class CourierController {
         });
       }
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -529,7 +717,7 @@ export class CourierController {
         count: result.length,
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -556,7 +744,7 @@ export class CourierController {
         data: result,
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -575,7 +763,7 @@ export class CourierController {
         message: 'Serviceable area deleted successfully',
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -606,7 +794,7 @@ export class CourierController {
         data: result,
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -637,7 +825,7 @@ export class CourierController {
         data: result,
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -668,7 +856,7 @@ export class CourierController {
         data: result,
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -697,7 +885,7 @@ export class CourierController {
         data: result,
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -707,7 +895,7 @@ export class CourierController {
    */
   async pathaoCreateStore(req: Request, res: Response, next: NextFunction) {
     try {
-      const { courierProviderId, environment = 'PRODUCTION', storeData } = req.body;
+      const { courierProviderId, environment = 'PRODUCTION', storeData, warehouseId } = req.body;
 
       if (!courierProviderId || !storeData) {
         return res.status(400).json({
@@ -716,19 +904,41 @@ export class CourierController {
         });
       }
 
+      // Optional warehouse link: checked BEFORE the store is created at Pathao.
+      const actor = pickupActor(req);
+      const credential = warehouseId ? await platformCredentialFor(courierProviderId, environment) : null;
+      let effectiveStoreData = storeData;
+      if (warehouseId) {
+        const pre = await warehouseCourierPickupService.precheckLink(warehouseId, credential!.id, actor, 'CREATED_FOR_WAREHOUSE');
+        if (pre.providerName !== 'Pathao') {
+          throw new PickupMappingError(400, 'PROVIDER_MISMATCH', 'courierProviderId is not the Pathao provider');
+        }
+        effectiveStoreData = await storeDataForWarehouse('Pathao', courierProviderId, pre.warehouse.locationId, storeData);
+      }
+
       const result = await courierService.pathaoCreateStore(
         courierProviderId,
-        storeData,
+        effectiveStoreData as any,
         environment
       );
+
+      const pickup = warehouseId
+        ? await this.linkCreatedStore('Pathao', result, warehouseId, credential!.id, actor, {
+            providerStoreName: effectiveStoreData?.name,
+            providerCityId: effectiveStoreData?.city_id,
+            providerZoneId: effectiveStoreData?.zone_id,
+            providerAreaId: effectiveStoreData?.area_id,
+          })
+        : undefined;
 
       res.status(201).json({
         success: true,
         message: 'Pathao store created successfully',
         data: result,
+        ...(pickup !== undefined ? { pickupMapping: pickup } : {}),
       });
     } catch (error: any) {
-      next(error);
+      handlePickupError(error, res, next);
     }
   }
 
@@ -759,7 +969,7 @@ export class CourierController {
         data: result,
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -796,7 +1006,7 @@ export class CourierController {
         data: result,
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -825,7 +1035,7 @@ export class CourierController {
         data: result,
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -835,7 +1045,7 @@ export class CourierController {
    */
   async redxCreatePickupStore(req: Request, res: Response, next: NextFunction) {
     try {
-      const { courierProviderId, environment = 'PRODUCTION', storeData } = req.body;
+      const { courierProviderId, environment = 'PRODUCTION', storeData, warehouseId } = req.body;
 
       if (!courierProviderId || !storeData) {
         return res.status(400).json({
@@ -844,19 +1054,39 @@ export class CourierController {
         });
       }
 
+      // Optional warehouse link: checked BEFORE the store is created at RedX.
+      const actor = pickupActor(req);
+      const credential = warehouseId ? await platformCredentialFor(courierProviderId, environment) : null;
+      let effectiveStoreData = storeData;
+      if (warehouseId) {
+        const pre = await warehouseCourierPickupService.precheckLink(warehouseId, credential!.id, actor, 'CREATED_FOR_WAREHOUSE');
+        if (pre.providerName !== 'RedX') {
+          throw new PickupMappingError(400, 'PROVIDER_MISMATCH', 'courierProviderId is not the RedX provider');
+        }
+        effectiveStoreData = await storeDataForWarehouse('RedX', courierProviderId, pre.warehouse.locationId, storeData);
+      }
+
       const result = await courierService.redxCreatePickupStore(
         courierProviderId,
-        storeData,
+        effectiveStoreData as any,
         environment
       );
+
+      const pickup = warehouseId
+        ? await this.linkCreatedStore('RedX', result, warehouseId, credential!.id, actor, {
+            providerStoreName: effectiveStoreData?.name,
+            providerAreaId: effectiveStoreData?.area_id,
+          })
+        : undefined;
 
       res.status(201).json({
         success: true,
         message: 'RedX pickup store created successfully',
         data: result,
+        ...(pickup !== undefined ? { pickupMapping: pickup } : {}),
       });
     } catch (error: any) {
-      next(error);
+      handlePickupError(error, res, next);
     }
   }
 
@@ -887,7 +1117,81 @@ export class CourierController {
         data: result,
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
+    }
+  }
+
+  // ==================== STEADFAST SPECIFIC ENDPOINTS ====================
+
+  /**
+   * Check a Steadfast consignment's live delivery status.
+   * GET /api/courier/admin/steadfast/status?courierProviderId=...&consignmentId=... (or &invoice=... or &trackingCode=...)
+   */
+  async steadfastCheckStatus(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { courierProviderId, environment = 'PRODUCTION', consignmentId, invoice, trackingCode } = req.query;
+
+      if (!courierProviderId) {
+        return res.status(400).json({ success: false, message: 'courierProviderId is required' });
+      }
+      if (!consignmentId && !invoice && !trackingCode) {
+        return res.status(400).json({ success: false, message: 'One of consignmentId, invoice or trackingCode is required' });
+      }
+
+      const lookup: any = consignmentId
+        ? { consignmentId: consignmentId as string }
+        : invoice
+        ? { invoice: invoice as string }
+        : { trackingCode: trackingCode as string };
+
+      const result = await courierService.steadfastCheckStatus(
+        courierProviderId as string,
+        lookup,
+        environment as 'SANDBOX' | 'PRODUCTION'
+      );
+
+      res.status(200).json({ success: true, data: result });
+    } catch (error: any) {
+      next(sanitizeCourierError(error));
+    }
+  }
+
+  /**
+   * GET /api/courier/admin/steadfast/balance
+   */
+  async steadfastGetBalance(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { courierProviderId, environment = 'PRODUCTION' } = req.query;
+      if (!courierProviderId) {
+        return res.status(400).json({ success: false, message: 'courierProviderId is required' });
+      }
+
+      const result = await courierService.steadfastGetBalance(
+        courierProviderId as string,
+        environment as 'SANDBOX' | 'PRODUCTION'
+      );
+
+      res.status(200).json({ success: true, data: result });
+    } catch (error: any) {
+      next(sanitizeCourierError(error));
+    }
+  }
+
+  /**
+   * POST /api/courier/admin/steadfast/bulk-order
+   * Body: { courierProviderId, environment?, orders: [...] } (max 500)
+   */
+  async steadfastBulkOrder(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { courierProviderId, environment = 'PRODUCTION', orders } = req.body;
+      if (!courierProviderId || !Array.isArray(orders) || orders.length === 0) {
+        return res.status(400).json({ success: false, message: 'courierProviderId and a non-empty orders array are required' });
+      }
+
+      const result = await courierService.steadfastBulkCreateOrder(courierProviderId, orders, environment);
+      res.status(201).json({ success: true, data: result });
+    } catch (error: any) {
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -901,18 +1205,33 @@ export class CourierController {
     try {
       const { orderId, vendorId, orderDetails } = req.body;
 
-      if (!orderId || !vendorId || !orderDetails) {
+      if (!orderId || !vendorId || !orderDetails?.intentId) {
         return res.status(400).json({
           success: false,
-          message: 'orderId, vendorId, and orderDetails are required',
+          message: 'orderId, vendorId, and orderDetails.intentId are required',
         });
       }
 
-      const result = await courierService.createCourierOrderForVendor(
-        orderId,
-        vendorId,
-        orderDetails
-      );
+      // Phase 0: the shipment (recipient, address, COD, weight, reference,
+      // courier, pricing) is read from the booking-intent row on the server.
+      // Any other client-supplied field is ignored; only the key names are logged.
+      const ignoredFields = Object.keys(orderDetails).filter((k) => k !== 'intentId');
+      if (ignoredFields.length > 0) {
+        console.warn(`[courier.orders.create] ignoring client-supplied booking fields: ${ignoredFields.join(', ')}`);
+      }
+
+      // A vendor-scoped employee may only book for its own vendor. (ADMIN may
+      // act for any vendor; for every actor the service then proves from the
+      // database that the warehouse and booking intent belong to `vendorId`
+      // before any courier API call.)
+      const actor = pickupActor(req);
+      if (actor.role !== 'ADMIN' && actor.vendorId && actor.vendorId !== vendorId) {
+        return res.status(403).json({ success: false, message: 'Not allowed to book courier orders for another vendor' });
+      }
+
+      const result = await courierService.createCourierOrderForVendor(orderId, vendorId, {
+        intentId: String(orderDetails.intentId),
+      });
 
       res.status(201).json({
         success: true,
@@ -920,7 +1239,15 @@ export class CourierController {
         data: result,
       });
     } catch (error: any) {
-      next(error);
+      const outcome = error?.courierBookingOutcome;
+      if (outcome === 'NOT_CLAIMED') {
+        return res.status(409).json({ success: false, code: 'BOOKING_NOT_CLAIMABLE', message: error.message });
+      }
+      if (outcome && outcome !== 'REJECTED') {
+        // UNKNOWN / CONFIRM_FAILED / STALE / OUTCOME_NOT_RECORDED
+        return res.status(409).json({ success: false, code: 'RECONCILIATION_REQUIRED', outcome, message: error.message });
+      }
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -936,6 +1263,7 @@ export class CourierController {
         orderWeight,
         codAmount,
         deliveryType = 'NORMAL',
+        warehouseId,
       } = req.body;
 
       if (!vendorWarehouseLocationId || !customerDeliveryLocationId || !orderWeight) {
@@ -952,6 +1280,8 @@ export class CourierController {
         orderWeight,
         codAmount: codAmount || 0,
         deliveryType,
+        // Pathao/RedX quote only for a warehouse with an active pickup store mapping
+        warehouseId,
       });
 
       res.status(200).json({
@@ -959,7 +1289,216 @@ export class CourierController {
         data: result,
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
+    }
+  }
+
+  // ==================== WAREHOUSE COURIER PICKUP MAPPING ====================
+
+  /**
+   * After a provider "create store" call with a warehouseId: record the new
+   * store as a PENDING_APPROVAL mapping when the provider returned its id.
+   * The store already exists at the provider, so a mapping failure is reported
+   * in the response (never hides the provider success).
+   */
+  private async linkCreatedStore(
+    providerName: 'Pathao' | 'RedX',
+    result: any,
+    warehouseId: string,
+    courierCredentialId: string,
+    actor: PickupActor,
+    fields: { providerStoreName?: any; providerCityId?: any; providerZoneId?: any; providerAreaId?: any },
+  ) {
+    const storeId = createdStoreId(providerName, result);
+    if (!storeId) {
+      return {
+        mapping: null,
+        message: `${providerName} did not return a store id — link the store to the warehouse via POST /admin/warehouse-pickups/link once it appears in the store list`,
+      };
+    }
+    try {
+      const linked = await warehouseCourierPickupService.linkStore(
+        {
+          warehouseId,
+          courierCredentialId,
+          providerStoreId: storeId,
+          providerStoreName: toStr(fields.providerStoreName),
+          providerCityId: toStr(fields.providerCityId),
+          providerZoneId: toStr(fields.providerZoneId),
+          providerAreaId: toStr(fields.providerAreaId) ?? toStr(result?.area_id),
+          rawData: result,
+        },
+        actor,
+        'CREATED_FOR_WAREHOUSE', // created by this request for this warehouse
+      );
+      return { mapping: linked!.mapping };
+    } catch (error: any) {
+      return { mapping: null, message: `Store created but not linked: ${error.message}` };
+    }
+  }
+
+  /**
+   * List warehouse pickup mappings
+   * GET /api/courier/admin/warehouse-pickups?warehouseId=&vendorId=&courierProviderId=&status=
+   */
+  async listWarehousePickups(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { warehouseId, vendorId, courierProviderId, courierCredentialId, status } = req.query as Record<string, string | undefined>;
+      const data = await warehouseCourierPickupService.list(
+        { warehouseId, vendorId, courierProviderId, courierCredentialId, status },
+        pickupActor(req),
+      );
+      res.status(200).json({ success: true, data });
+    } catch (error: any) {
+      handlePickupError(error, res, next);
+    }
+  }
+
+  /**
+   * Get one warehouse pickup mapping
+   * GET /api/courier/admin/warehouse-pickups/:mappingId
+   */
+  async getWarehousePickup(req: Request, res: Response, next: NextFunction) {
+    try {
+      const data = await warehouseCourierPickupService.getById(String(req.params.mappingId), pickupActor(req));
+      res.status(200).json({ success: true, data });
+    } catch (error: any) {
+      handlePickupError(error, res, next);
+    }
+  }
+
+  /**
+   * Link an EXISTING provider store to a warehouse (→ PENDING_APPROVAL).
+   * The store must be listed by the provider account behind the platform
+   * credential of `environment`; store details are taken from the provider.
+   * POST /api/courier/admin/warehouse-pickups/link
+   * Body: { warehouseId, courierProviderId, environment?, providerStoreId }
+   */
+  async linkWarehousePickup(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { warehouseId, courierProviderId, environment = 'PRODUCTION', providerStoreId } = req.body ?? {};
+      if (!warehouseId || !courierProviderId || !providerStoreId) {
+        return res.status(400).json({
+          success: false,
+          message: 'warehouseId, courierProviderId and providerStoreId are required',
+        });
+      }
+      if (environment !== 'PRODUCTION' && environment !== 'SANDBOX') {
+        return res.status(400).json({ success: false, message: 'environment must be PRODUCTION or SANDBOX' });
+      }
+      const actor = pickupActor(req);
+      const credential = await platformCredentialFor(courierProviderId, environment);
+      // EXISTING_STORE link: ADMIN only (shared platform account — no provider-side ownership data)
+      const { providerName, warehouse } = await warehouseCourierPickupService.precheckLink(warehouseId, credential.id, actor);
+
+      const store = await findProviderStore(providerName, courierProviderId, environment, String(providerStoreId).trim());
+      if (!store) {
+        return res.status(422).json({
+          success: false,
+          code: 'STORE_NOT_FOUND_AT_PROVIDER',
+          message: `${providerName} store ${providerStoreId} is not listed by the ${environment} merchant account`,
+        });
+      }
+      // the store must provably be at this warehouse's provider location
+      await assertStoreMatchesWarehouseLocation(providerName, courierProviderId, warehouse.locationId, store);
+
+      const result = await warehouseCourierPickupService.linkStore(
+        {
+          warehouseId,
+          courierCredentialId: credential.id,
+          providerStoreId: store.storeId,
+          providerStoreName: store.storeName,
+          providerCityId: store.cityId,
+          providerZoneId: store.zoneId,
+          providerAreaId: store.areaId,
+          rawData: store.raw,
+          verifiedAt: new Date(),
+        },
+        actor,
+      );
+      res.status(result!.created ? 201 : 200).json({ success: true, data: result!.mapping, created: result!.created });
+    } catch (error: any) {
+      handlePickupError(error, res, next);
+    }
+  }
+
+  /**
+   * Activate a mapping after re-verifying the store with the provider. Any
+   * other ACTIVE mapping of the same warehouse + credential becomes INACTIVE.
+   * Existing shipments are never modified (they keep their pickupStoreId).
+   * POST /api/courier/admin/warehouse-pickups/:mappingId/activate
+   */
+  async activateWarehousePickup(req: Request, res: Response, next: NextFunction) {
+    try {
+      const actor = pickupActor(req);
+      const mapping = await warehouseCourierPickupService.getById(String(req.params.mappingId), actor);
+      const credential = await prisma.courierCredential.findUnique({
+        where: { id: mapping.courierCredentialId },
+        select: { id: true, vendorId: true, environment: true, isActive: true, courier_providers: { select: { name: true } } },
+      });
+      if (!credential || !credential.isActive) {
+        throw new PickupMappingError(422, 'CREDENTIAL_INACTIVE', 'Courier credential is missing or inactive');
+      }
+      if (credential.vendorId !== null) {
+        // the provider store listing is only available for platform accounts
+        throw new PickupMappingError(422, 'CREDENTIAL_NOT_VERIFIABLE', 'Only platform-credential mappings can be verified and activated');
+      }
+      const providerName = credential.courier_providers.name;
+      const store = await findProviderStore(
+        providerName,
+        mapping.courierProviderId,
+        credential.environment as 'SANDBOX' | 'PRODUCTION',
+        String(mapping.providerStoreId ?? ''),
+      );
+      if (!store) {
+        throw new PickupMappingError(422, 'STORE_NOT_FOUND_AT_PROVIDER', `${providerName} store ${mapping.providerStoreId} is not listed by the merchant account`);
+      }
+      if (store.active === false) {
+        throw new PickupMappingError(422, 'STORE_NOT_APPROVED', `${providerName} store ${mapping.providerStoreId} is not active/approved at ${providerName} yet`);
+      }
+      if (providerName === 'RedX' && store.areaId && mapping.providerAreaId && store.areaId !== mapping.providerAreaId) {
+        throw new PickupMappingError(409, 'STORE_AREA_CHANGED', 'RedX reports a different area for this pickup store — link the store again');
+      }
+      // Location proof at activation:
+      //  (1) whatever location the provider reports for the store equals the mapping's
+      //      (RedX must report the area; Pathao's store list carries city/zone),
+      //  (2) the mapping's location still equals the warehouse's provider pickup location.
+      if (providerName === 'RedX' && store.areaId === null) {
+        throw new PickupMappingError(422, 'STORE_LOCATION_UNVERIFIABLE', 'RedX does not report this pickup store\'s area_id');
+      }
+      for (const [field, reported, mapped] of [
+        ['city_id', store.cityId, mapping.providerCityId],
+        ['zone_id', store.zoneId, mapping.providerZoneId],
+        ['area_id', store.areaId, mapping.providerAreaId],
+      ] as const) {
+        if (reported !== null && reported !== (mapped ?? null)) {
+          throw new PickupMappingError(409, 'STORE_LOCATION_CHANGED', `${providerName} reports ${field} ${reported} for this store but the mapping has ${mapped ?? 'none'} — link the store again`);
+        }
+      }
+      const warehouse = await prisma.vendorWarehouse.findUnique({ where: { id: mapping.warehouseId }, select: { locationId: true } });
+      if (!warehouse) throw new PickupMappingError(404, 'WAREHOUSE_NOT_FOUND', `Warehouse ${mapping.warehouseId} not found`);
+      await assertStoreMatchesWarehouseLocation(providerName, mapping.courierProviderId, warehouse.locationId, {
+        cityId: mapping.providerCityId,
+        zoneId: mapping.providerZoneId,
+        areaId: mapping.providerAreaId,
+      });
+      const result = await warehouseCourierPickupService.activate(mapping.id, actor, { rawData: store.raw, verifiedAt: new Date() });
+      res.status(200).json({ success: true, data: result!.mapping, replacedIds: result!.replacedIds });
+    } catch (error: any) {
+      handlePickupError(error, res, next);
+    }
+  }
+
+  /**
+   * Deactivate a mapping (the warehouse stops being eligible for that courier).
+   * POST /api/courier/admin/warehouse-pickups/:mappingId/deactivate
+   */
+  async deactivateWarehousePickup(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await warehouseCourierPickupService.deactivate(String(req.params.mappingId), pickupActor(req));
+      res.status(200).json({ success: true, data: result.mapping });
+    } catch (error: any) {
+      handlePickupError(error, res, next);
     }
   }
 
@@ -972,7 +1511,7 @@ export class CourierController {
   async vendorMarkReadyForPickup(req: Request, res: Response, next: NextFunction) {
     try {
       const { orderId } = req.params;
-      const vendorId = req.body.vendorId || (req as any).vendor?.id;
+      const vendorId = vendorRouteScope(req, res, 'POST /vendor/orders/:orderId/ready');
 
       if (!vendorId) {
         return res.status(401).json({
@@ -988,7 +1527,7 @@ export class CourierController {
         message: 'Order marked as ready for pickup',
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -999,7 +1538,7 @@ export class CourierController {
   async getShippingLabel(req: Request, res: Response, next: NextFunction) {
     try {
       const { orderId } = req.params;
-      const vendorId = req.query.vendorId || (req as any).vendor?.id;
+      const vendorId = vendorRouteScope(req, res, 'GET /vendor/orders/:orderId/label');
 
       if (!vendorId) {
         return res.status(401).json({
@@ -1008,14 +1547,14 @@ export class CourierController {
         });
       }
 
-      const labelData = await courierService.generateShippingLabel(parseInt(orderId));
+      const labelData = await courierService.generateShippingLabel(parseInt(orderId), vendorId);
 
       res.status(200).json({
         success: true,
         data: labelData,
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -1025,7 +1564,7 @@ export class CourierController {
    */
   async getVendorCourierOrders(req: Request, res: Response, next: NextFunction) {
     try {
-      const vendorId = req.query.vendorId || (req as any).vendor?.id;
+      const vendorId = vendorRouteScope(req, res, 'GET /vendor/orders');
       const { status, page = 1, limit = 20 } = req.query;
 
       if (!vendorId) {
@@ -1042,7 +1581,7 @@ export class CourierController {
         message: 'Implementation pending',
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -1091,7 +1630,7 @@ export class CourierController {
         data: publicData,
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -1117,7 +1656,7 @@ export class CourierController {
         data: result,
       });
     } catch (error: any) {
-      next(error);
+      next(sanitizeCourierError(error));
     }
   }
 
@@ -1169,6 +1708,127 @@ export class CourierController {
       res.status(200).json({
         success: false,
         message: 'Webhook received but processing failed',
+      });
+    }
+  }
+
+  // ==================== PRICING RULES (ADMIN) ====================
+
+  /**
+   * List courier pricing rules
+   * GET /api/courier/admin/pricing-rules
+   */
+  async listPricingRules(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { courierProviderId, isActive, deliveryType, fromLocationId, toLocationId, page, limit } = req.query as Record<string, string | undefined>;
+
+      const filters: any = {};
+      if (courierProviderId) filters.courierProviderId = courierProviderId;
+      if (isActive !== undefined) filters.isActive = isActive === 'true';
+      if (deliveryType) filters.deliveryType = deliveryType;
+      if (fromLocationId !== undefined) filters.fromLocationId = fromLocationId;
+      if (toLocationId !== undefined) filters.toLocationId = toLocationId;
+      if (page) filters.page = Number(page);
+      if (limit) filters.limit = Number(limit);
+
+      const result = await courierService.listPricingRules(filters);
+
+      res.status(200).json({
+        success: true,
+        data: result.rules,
+        pagination: result.pagination,
+      });
+    } catch (error: any) {
+      next(sanitizeCourierError(error));
+    }
+  }
+
+  /**
+   * Create a platform courier pricing rule
+   * POST /api/courier/admin/pricing-rules
+   */
+  async createPricingRule(req: Request, res: Response, next: NextFunction) {
+    try {
+      const rule = await courierService.createPricingRule(req.body);
+
+      res.status(201).json({
+        success: true,
+        message: 'Courier pricing rule created successfully',
+        data: rule,
+      });
+    } catch (error: any) {
+      res.status(400).json({
+        success: false,
+        message: error.message || 'Failed to create courier pricing rule',
+      });
+    }
+  }
+
+  /**
+   * Update a platform courier pricing rule
+   * PUT /api/courier/admin/pricing-rules/:id
+   */
+  async updatePricingRule(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { id } = req.params;
+      const rule = await courierService.updatePricingRule(id, req.body);
+
+      res.status(200).json({
+        success: true,
+        message: 'Courier pricing rule updated successfully',
+        data: rule,
+      });
+    } catch (error: any) {
+      const status = error.message?.includes('not found') ? 404 : 400;
+      res.status(status).json({
+        success: false,
+        message: error.message || 'Failed to update courier pricing rule',
+      });
+    }
+  }
+
+  /**
+   * Toggle a courier pricing rule active status
+   * PATCH /api/courier/admin/pricing-rules/:id/toggle
+   */
+  async togglePricingRule(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { id } = req.params;
+      const rule = await courierService.togglePricingRuleStatus(id);
+
+      res.status(200).json({
+        success: true,
+        message: `Courier pricing rule ${rule.isActive ? 'activated' : 'deactivated'} successfully`,
+        data: rule,
+      });
+    } catch (error: any) {
+      const status = error.message?.includes('not found') ? 404 : 400;
+      res.status(status).json({
+        success: false,
+        message: error.message || 'Failed to toggle courier pricing rule',
+      });
+    }
+  }
+
+  /**
+   * Delete a courier pricing rule
+   * DELETE /api/courier/admin/pricing-rules/:id
+   */
+  async deletePricingRule(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { id } = req.params;
+      const result = await courierService.deletePricingRule(id);
+
+      res.status(200).json({
+        success: true,
+        message: 'Courier pricing rule deleted successfully',
+        data: result,
+      });
+    } catch (error: any) {
+      const status = error.message?.includes('not found') ? 404 : 400;
+      res.status(status).json({
+        success: false,
+        message: error.message || 'Failed to delete courier pricing rule',
       });
     }
   }

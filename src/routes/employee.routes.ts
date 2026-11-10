@@ -86,6 +86,7 @@ router.patch(
 router.put(
   '/employees/:employeeId/permissions',
   authenticateUser,
+  authorizeRoles('ADMIN', 'VENDOR'),   
   employeeController.updateEmployeePermissions
 );
 
@@ -93,6 +94,7 @@ router.put(
 router.get(
   '/employees/:employeeId/permissions',
   authenticateUser,
+  authorizeRoles('ADMIN', 'VENDOR'),  
   employeeController.getEmployeePermissions
 );
 
@@ -124,6 +126,7 @@ router.get(
 router.get(
   '/employees/:employeeId',
   authenticateUser,
+  authorizeRoles('ADMIN', 'VENDOR', 'EMPLOYEE'),
   employeeController.getEmployee
 );
 

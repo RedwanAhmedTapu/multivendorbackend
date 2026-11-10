@@ -60,5 +60,28 @@ router.post(
   categoryimageUpload("category", "ADMIN", undefined, 1, "image"),
   CategoryController.uploadImage
 );
+// Vendor submits request
+router.post(
+  "/catalog-request",
+  authenticateUser,
+  authorizeRoles("VENDOR"),
+  CategoryController.createCatalogRequest
+);
+
+// Vendor sees own requests
+router.get(
+  "/catalog-request/my",
+  authenticateUser,
+  authorizeRoles("VENDOR"),
+  CategoryController.getMyCatalogRequests
+);
+
+// Admin sees all requests
+router.get(
+  "/catalog-request/all",
+  authenticateUser,
+  authorizeRoles("ADMIN"),
+  CategoryController.getAllCatalogRequests
+);
 
 export default router;

@@ -192,11 +192,16 @@ router.get(
 // In your cart/checkout routes file (e.g., cart.routes.ts)
 
 /**
- * @route   POST /api/cart/delivery-fees
+ * @route   POST /api/cart-wish/delivery-fees
+ * @route   GET /api/cart-wish/delivery-fees
  * @desc    Calculate delivery fees for cart items
  * @access  Public (session) or Authenticated
  */
 router.post(
+  '/delivery-fees',
+  cartWishController.calculateDeliveryFees.bind(cartWishController)
+);
+router.get(
   '/delivery-fees',
   cartWishController.calculateDeliveryFees.bind(cartWishController)
 );

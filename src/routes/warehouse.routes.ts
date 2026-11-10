@@ -70,6 +70,90 @@ router.patch(
   controller.setDefaultWarehouse,
 );
 
+// GET    /warehouses/:id/usage
+// Derived lifecycle state: operational?, locked fields, deactivate/delete eligibility.
+router.get(
+  '/warehouses/:id/usage',
+  authenticateUser,
+  authorizeRoles('ADMIN', 'VENDOR'),
+  controller.getWarehouseUsage,
+);
+
+// PATCH  /warehouses/:id/deactivate
+// Allowed only when no stock (on hand/reserved/damaged) and no pending
+// allocations, courier shipments or open purchase orders remain.
+router.patch(
+  '/warehouses/:id/deactivate',
+  authenticateUser,
+  authorizeRoles('ADMIN', 'VENDOR'),
+  controller.deactivateWarehouse,
+);
+
+// PATCH  /warehouses/:id/reactivate
+router.patch(
+  '/warehouses/:id/reactivate',
+  authenticateUser,
+  authorizeRoles('ADMIN', 'VENDOR'),
+  controller.reactivateWarehouse,
+);
+
+// ─────────────────────────────────────────────────────────────────
+// RACK CRUD
+// A rack declares its own row/shelf capacity (totalRows, totalShelves).
+// Actual product placement into a row/shelf happens via the stock
+// endpoints below (rackId + rowNumber + shelfNumber), not here.
+// ─────────────────────────────────────────────────────────────────
+
+// POST   /warehouses/:warehouseId/racks
+// Body: { code, label?, totalRows?, totalShelves?, isActive? }
+router.post(
+  '/warehouses/:warehouseId/racks',
+  authenticateUser,
+  authorizeRoles('ADMIN', 'VENDOR'),
+  controller.createRack,
+);
+
+// GET    /warehouses/:warehouseId/racks  ?isActive=
+router.get(
+  '/warehouses/:warehouseId/racks',
+  authenticateUser,
+  authorizeRoles('ADMIN', 'VENDOR'),
+  controller.getRacksByWarehouse,
+);
+
+// GET    /racks/:id
+router.get(
+  '/racks/:id',
+  authenticateUser,
+  authorizeRoles('ADMIN', 'VENDOR'),
+  controller.getRackById,
+);
+
+// PATCH  /racks/:id
+// Body: { code?, label?, totalRows?, totalShelves?, isActive? }
+router.patch(
+  '/racks/:id',
+  authenticateUser,
+  authorizeRoles('ADMIN', 'VENDOR'),
+  controller.updateRack,
+);
+
+// DELETE /racks/:id
+router.delete(
+  '/racks/:id',
+  authenticateUser,
+  authorizeRoles('ADMIN', 'VENDOR'),
+  controller.deleteRack,
+);
+
+// PATCH  /racks/:id/toggle-active
+router.patch(
+  '/racks/:id/toggle-active',
+  authenticateUser,
+  authorizeRoles('ADMIN', 'VENDOR'),
+  controller.toggleRackActive,
+);
+
 // ─────────────────────────────────────────────────────────────────
 // HOLIDAY CRUD
 // ─────────────────────────────────────────────────────────────────
@@ -111,7 +195,10 @@ router.delete(
 // ─────────────────────────────────────────────────────────────────
 
 // POST /warehouses/:warehouseId/stock/receive
-// Body: { purchaseOrderId, vendorId, items: [...], createdBy? }
+// Body: { purchaseOrderId, vendorId, items: [
+//   { purchaseOrderItemId, variantId, receivedQty, unitCost, newAvgCost,
+//     sellPrice?, rackId?, rowNumber?, shelfNumber? }
+// ], createdBy? }
 router.post(
   '/warehouses/:warehouseId/stock/receive',
   authenticateUser,
@@ -124,7 +211,8 @@ router.post(
 // ─────────────────────────────────────────────────────────────────
 
 // POST /stock/adjust
-// Body: { variantId, warehouseId, vendorId, quantity, movementType, reason?, notes? }
+// Body: { variantId, warehouseId, vendorId, quantity, movementType,
+//   rackId?, rowNumber?, shelfNumber?, reason?, notes? }
 router.post(
   '/stock/adjust',
   authenticateUser,
@@ -137,7 +225,9 @@ router.post(
 // ─────────────────────────────────────────────────────────────────
 
 // POST /stock/transfer
-// Body: { variantId, fromWarehouseId, toWarehouseId, vendorId, quantity, reason?, notes? }
+// Body: { variantId, fromWarehouseId, toWarehouseId, vendorId, quantity,
+//   fromRackId?, fromRowNumber?, fromShelfNumber?,
+//   toRackId?, toRowNumber?, toShelfNumber?, reason?, notes? }
 router.post(
   '/stock/transfer',
   authenticateUser,
@@ -150,7 +240,9 @@ router.post(
 // ─────────────────────────────────────────────────────────────────
 
 // POST /stock/sell-damaged
-// Body: { variantId, fromWarehouseId, vendorId, quantity, saleAmount, coaAccountId?, reason?, notes? }
+// Body: { variantId, fromWarehouseId, vendorId, quantity, saleAmount,
+//   fromRackId?, fromRowNumber?, fromShelfNumber?,
+//   coaAccountId?, reason?, notes? }
 router.post(
   '/stock/sell-damaged',
   authenticateUser,
@@ -162,7 +254,7 @@ router.post(
 // STOCK — QUERY
 // ─────────────────────────────────────────────────────────────────
 
-// GET /stock  ?warehouseId=&variantId=&lowStockOnly=&outOfStockOnly=&page=&limit=
+// GET /stock  ?warehouseId=&variantId=&rackId=&rowNumber=&shelfNumber=&lowStockOnly=&outOfStockOnly=&page=&limit=
 router.get(
   '/stock',
   authenticateUser,

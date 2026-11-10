@@ -1,35 +1,34 @@
 // controllers/vendor-storage.controller.ts
 import type { Request, Response } from "express";
 import { vendorStorageService } from "../services/vendor-storage.service.ts";
+import { listVendorProductImagesFromR2 } from "../lib/cloudflare-r2.ts";
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
 export class VendorStorageController {
-  
+
   // Upload single file
   async uploadFile(req: Request, res: Response) {
     try {
       const vendorId = req.user?.vendorId?.toString();
       if (!vendorId) {
-        return res.status(400).json({ 
-          success: false, 
-          message: "Vendor ID not found" 
+        return res.status(400).json({
+          success: false,
+          message: "Vendor ID not found"
         });
       }
 
       const file = req.file;
       if (!file) {
-        return res.status(400).json({ 
-          success: false, 
-          message: "No file uploaded" 
+        return res.status(400).json({
+          success: false,
+          message: "No file uploaded"
         });
       }
 
-      // Determine file type
       const fileType = file.mimetype.startsWith('image/') ? 'IMAGE' : 'DOCUMENT';
 
-      // Upload file with quota check
       const storageFile = await vendorStorageService.uploadFile({
         vendorId,
         file: file.buffer,
@@ -38,6 +37,8 @@ export class VendorStorageController {
         fileType,
         productId: req.body.productId,
         variantId: req.body.variantId,
+        folderId: req.body.folderId || null,          
+        documentType: req.body.documentType || null,  
       });
 
       res.json({
@@ -46,13 +47,19 @@ export class VendorStorageController {
           id: storageFile.id,
           fileName: storageFile.fileName,
           url: storageFile.r2Url,
-          fileSize: storageFile.fileSize,
+          fileSize: storageFile.fileSize, 
           mimeType: storageFile.mimeType,
+          folderId: storageFile.folderId,
         },
       });
     } catch (error: any) {
       console.error('File upload error:', error);
-      res.status(error.message.includes('quota') ? 403 : 500).json({
+      const status = error.message.includes('quota')
+        ? 403
+        : error.message.includes('folder not found')
+        ? 404
+        : 500;
+      res.status(status).json({
         success: false,
         message: error.message || "File upload failed",
       });
@@ -64,24 +71,22 @@ export class VendorStorageController {
     try {
       const vendorId = req.user?.vendorId?.toString();
       if (!vendorId) {
-        return res.status(400).json({ 
-          success: false, 
-          message: "Vendor ID not found" 
+        return res.status(400).json({
+          success: false,
+          message: "Vendor ID not found"
         });
       }
 
       const files = req.files as Express.Multer.File[];
       if (!files || files.length === 0) {
-        return res.status(400).json({ 
-          success: false, 
-          message: "No files uploaded" 
+        return res.status(400).json({
+          success: false,
+          message: "No files uploaded"
         });
       }
 
-      // Calculate total size first
       const totalSize = files.reduce((sum, file) => sum + file.size, 0);
 
-      // Check quota for all files at once
       const quotaCheck = await vendorStorageService.checkQuota(vendorId, totalSize);
       if (!quotaCheck.allowed) {
         return res.status(403).json({
@@ -93,10 +98,12 @@ export class VendorStorageController {
         });
       }
 
-      // Upload all files
+      const folderId = req.body.folderId || null;
+      const documentType = req.body.documentType || null;
+
       const uploadPromises = files.map(file => {
         const fileType = file.mimetype.startsWith('image/') ? 'IMAGE' : 'DOCUMENT';
-        
+
         return vendorStorageService.uploadFile({
           vendorId,
           file: file.buffer,
@@ -105,6 +112,8 @@ export class VendorStorageController {
           fileType,
           productId: req.body.productId,
           variantId: req.body.variantId,
+          folderId,      
+          documentType,   
         });
       });
 
@@ -116,16 +125,22 @@ export class VendorStorageController {
           id: file.id,
           fileName: file.fileName,
           url: file.r2Url,
-          path: file.r2Url, // For backward compatibility
-          fileSize: file.fileSize,
+          path: file.r2Url, 
+          fileSize: file.fileSize, 
           mimeType: file.mimeType,
+          folderId: file.folderId,
         })),
         totalFiles: uploadedFiles.length,
         totalSize,
       });
     } catch (error: any) {
       console.error('Multiple files upload error:', error);
-      res.status(error.message.includes('quota') ? 403 : 500).json({
+      const status = error.message.includes('quota')
+        ? 403
+        : error.message.includes('folder not found')
+        ? 404
+        : 500;
+      res.status(status).json({
         success: false,
         message: error.message || "Files upload failed",
       });
@@ -139,15 +154,14 @@ export class VendorStorageController {
       const { fileId } = req.params;
 
       if (!vendorId || !fileId) {
-        return res.status(400).json({ 
-          success: false, 
-          message: "Missing required parameters" 
+        return res.status(400).json({
+          success: false,
+          message: "Missing required parameters"
         });
       }
 
-      // Verify file belongs to vendor
       const file = await prisma.storageFile.findFirst({
-        where: { 
+        where: {
           id: fileId,
           vendorId,
           isActive: true,
@@ -155,9 +169,9 @@ export class VendorStorageController {
       });
 
       if (!file) {
-        return res.status(404).json({ 
-          success: false, 
-          message: "File not found or already deleted" 
+        return res.status(404).json({
+          success: false,
+          message: "File not found or already deleted"
         });
       }
 
@@ -175,71 +189,94 @@ export class VendorStorageController {
       });
     }
   }
-
-  // Get storage stats
-  // Get storage stats (Controller)
-async getStorageStats(req: Request, res: Response) {
+// controllers/vendor-storage.controller.ts (add this method)
+async getProductImagesFromR2(req: Request, res: Response) {
   try {
     const vendorId = req.user?.vendorId?.toString();
     if (!vendorId) {
-      return res.status(400).json({
-        success: false,
-        message: "Vendor ID not found",
-      });
+      return res.status(400).json({ success: false, message: "Vendor ID not found" });
     }
 
-    const stats = await vendorStorageService.getStorageStats(vendorId);
-    if (!stats) {
-      return res.status(404).json({
-        success: false,
-        message: "Storage stats not found",
-      });
-    }
+    const objects = await listVendorProductImagesFromR2(vendorId);
 
-    // Safe numeric conversions
-    const usedBytes = parseFloat(stats.usedBytes);
-    const totalBytes = parseFloat(stats.totalBytes);
-    const usedGB = parseFloat(stats.usedGB);
-    const totalGB = parseFloat(stats.totalGB);
-    const remainingGB = parseFloat(stats.remainingGB);
-    const usagePercent = parseFloat(stats.usagePercent);
-    const remainingBytes = totalBytes - usedBytes;
-
-    return res.json({
+    res.json({
       success: true,
-      stats: {
-        usedBytes,
-        totalBytes,
-        remainingBytes,
-
-        usedGB,
-        totalGB,
-        remainingGB,
-
-        usedSize: stats.usedSize,
-        usedUnit: stats.usedUnit,
-        usedMB: parseFloat(stats.usedMB),
-
-        freeQuotaGB: stats.freeQuotaGB,
-        paidQuotaGB: stats.paidQuotaGB,
-
-        usagePercent,
-
-        totalFiles: stats.totalFiles,
-        imageFiles: stats.imageFiles,
-        documentFiles: stats.documentFiles,
-      },
+      files: objects.map((o) => ({
+        key: o.key,
+        url: o.url,
+        size: o.size,
+        lastModified: o.lastModified,
+      })),
+      total: objects.length,
     });
   } catch (error: any) {
-    console.error("Get storage stats error:", error);
-    return res.status(500).json({
+    console.error("List R2 product images error:", error);
+    res.status(500).json({
       success: false,
-      message: error.message || "Failed to fetch storage stats",
+      message: error.message || "Failed to list product images",
     });
   }
 }
+  // Get storage stats
+  async getStorageStats(req: Request, res: Response) {
+    try {
+      const vendorId = req.user?.vendorId?.toString();
+      if (!vendorId) {
+        return res.status(400).json({
+          success: false,
+          message: "Vendor ID not found",
+        });
+      }
 
+      const stats = await vendorStorageService.getStorageStats(vendorId);
+      if (!stats) {
+        return res.status(404).json({
+          success: false,
+          message: "Storage stats not found",
+        });
+      }
 
+      const usedBytes = parseFloat(stats.usedBytes);
+      const totalBytes = parseFloat(stats.totalBytes);
+      const usedGB = parseFloat(stats.usedGB);
+      const totalGB = parseFloat(stats.totalGB);
+      const remainingGB = parseFloat(stats.remainingGB);
+      const usagePercent = parseFloat(stats.usagePercent);
+      const remainingBytes = totalBytes - usedBytes;
+
+      return res.json({
+        success: true,
+        stats: {
+          usedBytes,
+          totalBytes,
+          remainingBytes,
+
+          usedGB,
+          totalGB,
+          remainingGB,
+
+          usedSize: stats.usedSize,
+          usedUnit: stats.usedUnit,
+          usedMB: parseFloat(stats.usedMB),
+
+          freeQuotaGB: stats.freeQuotaGB,
+          paidQuotaGB: stats.paidQuotaGB,
+
+          usagePercent,
+
+          totalFiles: stats.totalFiles,
+          imageFiles: stats.imageFiles,
+          documentFiles: stats.documentFiles,
+        },
+      });
+    } catch (error: any) {
+      console.error("Get storage stats error:", error);
+      return res.status(500).json({
+        success: false,
+        message: error.message || "Failed to fetch storage stats",
+      });
+    }
+  }
 
   // Check quota
   async checkQuota(req: Request, res: Response) {
@@ -248,21 +285,21 @@ async getStorageStats(req: Request, res: Response) {
       const { requiredSpace } = req.body;
 
       if (!vendorId) {
-        return res.status(400).json({ 
-          success: false, 
-          message: "Vendor ID not found" 
+        return res.status(400).json({
+          success: false,
+          message: "Vendor ID not found"
         });
       }
 
       if (!requiredSpace || requiredSpace <= 0) {
-        return res.status(400).json({ 
-          success: false, 
-          message: "Invalid required space value" 
+        return res.status(400).json({
+          success: false,
+          message: "Invalid required space value"
         });
       }
 
       const quotaCheck = await vendorStorageService.checkQuota(
-        vendorId, 
+        vendorId,
         requiredSpace
       );
 
@@ -291,21 +328,21 @@ async getStorageStats(req: Request, res: Response) {
       const { additionalGB } = req.body;
 
       if (!vendorId) {
-        return res.status(400).json({ 
-          success: false, 
-          message: "Vendor ID not found" 
+        return res.status(400).json({
+          success: false,
+          message: "Vendor ID not found"
         });
       }
 
       if (!additionalGB || additionalGB <= 0) {
-        return res.status(400).json({ 
-          success: false, 
-          message: "Invalid storage amount" 
+        return res.status(400).json({
+          success: false,
+          message: "Invalid storage amount"
         });
       }
 
       const result = await vendorStorageService.purchaseStorage(
-        vendorId, 
+        vendorId,
         additionalGB
       );
 
@@ -323,22 +360,21 @@ async getStorageStats(req: Request, res: Response) {
     }
   }
 
- // Get vendor files
-async getVendorFiles(req: Request, res: Response) {
+  // Get vendor files
+  async getVendorFiles(req: Request, res: Response) {
   try {
     const vendorId = req.user?.vendorId?.toString();
     if (!vendorId) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Vendor ID not found" 
-      });
+      return res.status(400).json({ success: false, message: "Vendor ID not found" });
     }
 
-    const { 
-      category, 
-      page = 1, 
+    const {
+      category,
+      page = 1,
       limit = 20,
       fileType,
+      folderId,
+      excludeProductFiles, // NEW
     } = req.query;
 
     const skip = (Number(page) - 1) * Number(limit);
@@ -352,9 +388,14 @@ async getVendorFiles(req: Request, res: Response) {
       where.fileType = fileType;
     }
 
-    if (category) {
-      // You can add category filtering based on productId/variantId
-      // or add a category field to your schema
+    if (folderId === "root") {
+      where.folderId = null;
+      if (excludeProductFiles === "true") {
+        where.productId = null;
+        where.variantId = null;
+      }
+    } else if (folderId) {
+      where.folderId = folderId as string;
     }
 
     const [files, total] = await Promise.all([
@@ -373,16 +414,18 @@ async getVendorFiles(req: Request, res: Response) {
           r2Url: true,
           productId: true,
           variantId: true,
+          folderId: true,
+          documentType: true,
           createdAt: true,
         },
       }),
       prisma.storageFile.count({ where }),
     ]);
 
-    // Convert BigInt fields to strings
     const serializedFiles = files.map(file => ({
       ...file,
       id: file.id.toString(),
+      fileSize: file.fileSize.toString(),
       productId: file.productId?.toString(),
       variantId: file.variantId?.toString(),
     }));
@@ -410,13 +453,12 @@ async getVendorFiles(req: Request, res: Response) {
   async calculateMonthlyCharges(req: Request, res: Response) {
     try {
       const { vendorIds, calculationDate } = req.body;
-      
-      const billingPeriod = calculationDate || 
-        new Date().toISOString().slice(0, 7); // YYYY-MM format
+
+      const billingPeriod = calculationDate ||
+        new Date().toISOString().slice(0, 7);
 
       let vendors: string[] = vendorIds;
 
-      // If no specific vendors, calculate for all
       if (!vendors || vendors.length === 0) {
         const allVendors = await prisma.vendor.findMany({
           select: { id: true },
@@ -425,7 +467,7 @@ async getVendorFiles(req: Request, res: Response) {
       }
 
       const charges = await Promise.all(
-        vendors.map(vendorId => 
+        vendors.map(vendorId =>
           vendorStorageService.calculateMonthlyCharges(vendorId, billingPeriod)
         )
       );

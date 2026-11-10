@@ -1,0 +1,63 @@
+// PROPOSED — NOT APPLIED. Add to prisma/schema.prisma together with the migration.
+// Visual session replay (src/modules/analytics/session-replay.*).
+
+/// One rrweb recording of a browser session. Linked to the Business Advisor
+/// journey through the same analytics session key ("s:<session id>").
+/// Admin-only to watch; synthetic (tester-opted-in) recordings only in phase 1.
+model SessionRecording {
+  id              String    @id @default(cuid())
+  /// Same journey key as AnalyticsEvent.sessionKey.
+  sessionKey      String
+  /// journeyLabel(sessionKey), e.g. "J-0A1B2C3D" — what Business Advisor shows.
+  journeyLabel    String
+  /// Pseudonymous actor ("v:<visitor id>" / "u:<hash>"), as in AnalyticsEvent.
+  actorKey        String
+  /// sha256 of the random upload token handed to the recording browser.
+  uploadTokenHash String
+  synthetic       Boolean   @default(true)
+  /// RECORDING | COMPLETE | STOPPED
+  status          String    @default("RECORDING")
+  /// max_chunks | max_bytes | max_duration
+  stopReason      String?
+  /// First page path (no query string).
+  entryPath       String?
+  startedAt       DateTime  @default(now())
+  firstEventAt    DateTime?
+  lastEventAt     DateTime?
+  chunkCount      Int       @default(0)
+  eventCount      Int       @default(0)
+  /// Compressed bytes stored.
+  bytes           Int       @default(0)
+  pageCount       Int       @default(0)
+  /// Deleted by the analytics retention job after this instant.
+  expiresAt       DateTime
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  chunks SessionRecordingChunk[]
+
+  @@index([journeyLabel, startedAt])
+  @@index([sessionKey])
+  @@index([startedAt])
+  @@index([expiresAt])
+  @@index([status, startedAt])
+  @@map("session_recordings")
+}
+
+/// One uploaded batch of rrweb events; the body is in private object storage.
+model SessionRecordingChunk {
+  id           String   @id @default(cuid())
+  recordingId  String
+  seq          Int
+  storageKey   String
+  bytes        Int
+  eventCount   Int
+  firstEventAt DateTime
+  lastEventAt  DateTime
+  createdAt    DateTime @default(now())
+
+  recording SessionRecording @relation(fields: [recordingId], references: [id], onDelete: Cascade)
+
+  @@unique([recordingId, seq])
+  @@map("session_recording_chunks")
+}

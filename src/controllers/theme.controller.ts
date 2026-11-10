@@ -1,6 +1,6 @@
 // controllers/theme.controller.ts
 import type { Request, Response } from 'express';
-import { themeService } from '../services/theme.service.ts';
+import { themeService, ACTIVE_LAYOUT_LOCKED } from '../services/theme.service.ts';
 import type { CreateThemeDto, LayoutType } from '../types/theme.types.ts';
 
 export class ThemeController {
@@ -208,6 +208,13 @@ export class ThemeController {
         });
       }
 
+      if (error.message === ACTIVE_LAYOUT_LOCKED) {
+        return res.status(409).json({
+          success: false,
+          error: error.message,
+        });
+      }
+
       res.status(500).json({
         success: false,
         error: 'Failed to deactivate theme',
@@ -242,6 +249,13 @@ export class ThemeController {
       
       if (error.message === 'Theme not found') {
         return res.status(404).json({
+          success: false,
+          error: error.message,
+        });
+      }
+
+      if (error.message === ACTIVE_LAYOUT_LOCKED) {
+        return res.status(409).json({
           success: false,
           error: error.message,
         });

@@ -2,6 +2,9 @@
 import { PrismaClient } from '@prisma/client';
 import { UserRole, Prisma } from '@prisma/client';
 import type { CreateEmployeeRequest, UpdateEmployeeRequest } from '../types/employee.types.ts';
+// Shared client for the (non-transactional) permissions read/write — keeps
+// them spy-able in tests and consistent with the rest of the HRM module.
+import { prisma as sharedPrisma } from '../config/prisma.ts';
 
 const prisma = new PrismaClient();
 
@@ -522,7 +525,7 @@ export class EmployeeService {
       where.vendorId = null;
     }
 
-    const employee = await prisma.employee.findUnique({
+    const employee = await sharedPrisma.employee.findUnique({
       where,
     });
 
@@ -530,9 +533,15 @@ export class EmployeeService {
       throw new Error('Employee not found');
     }
 
-    const updatedEmployee = await prisma.employee.update({
+    // The permission editor sends ONLY the changed keys — merge them over the
+    // currently stored set so untouched grants survive the update.
+    const existingPermissions = (employee.permissions ?? {}) as Record<string, boolean>;
+    const incomingPermissions = (permissions ?? {}) as Record<string, boolean>;
+    const mergedPermissions = { ...existingPermissions, ...incomingPermissions };
+
+    const updatedEmployee = await sharedPrisma.employee.update({
       where: { id: employeeId },
-      data: { permissions },
+      data: { permissions: mergedPermissions },
       include: {
         user: {
           select: {
@@ -571,7 +580,7 @@ export class EmployeeService {
       where.vendorId = null;
     }
 
-    const employee = await prisma.employee.findUnique({
+    const employee = await sharedPrisma.employee.findUnique({
       where,
       select: {
         id: true,
@@ -589,7 +598,9 @@ export class EmployeeService {
       throw new Error('Employee not found');
     }
 
-    return employee;
+    // Return the granted permission set itself (not the employee row) so the
+    // editor modal can pre-check exactly what this employee holds.
+    return (employee.permissions ?? {}) as Record<string, boolean>;
   }
 
   // =============================
@@ -658,3 +669,7 @@ export class EmployeeService {
     };
   }
 }
+
+// Shared singleton — the controller (and tests) import this instance so
+// behavior is identical everywhere and only ONE PrismaClient is created.
+export const employeeService = new EmployeeService();

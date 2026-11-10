@@ -1,0 +1,63 @@
+# k8s/deployment.yaml
+#
+# Works on any Kubernetes — including free, self-hosted k3s or MicroK8s on
+# your own VPS (no managed control-plane cost). Build and push your image
+# first:
+#   docker build -t <your-registry>/multivendorbackend:latest .
+#   docker push <your-registry>/multivendorbackend:latest
+# (Docker Hub's free tier is fine for a public or single-private image.)
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: multivendor-api
+  labels:
+    app: multivendor-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: multivendor-api
+  template:
+    metadata:
+      labels:
+        app: multivendor-api
+    spec:
+      containers:
+        - name: api
+          image: <your-registry>/multivendorbackend:latest
+          ports:
+            - containerPort: 5000
+          envFrom:
+            - secretRef:
+                name: multivendor-env
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 5000
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "150m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+---
+# All the secrets from .env go here — NEVER commit the real values of this
+# file. Create it directly on the cluster instead:
+#   kubectl create secret generic multivendor-env --from-env-file=.env
+apiVersion: v1
+kind: Secret
+metadata:
+  name: multivendor-env
+type: Opaque
+stringData:
+  PLACEHOLDER: "created via kubectl create secret generic multivendor-env --from-env-file=.env — do not fill this in here"

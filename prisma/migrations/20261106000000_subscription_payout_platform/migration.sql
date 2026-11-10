@@ -406,16 +406,7 @@ ALTER TABLE "public"."payout_batch_items" ADD CONSTRAINT "payout_batch_items_bat
 
 -- AddForeignKey
 ALTER TABLE "public"."payout_batch_items" ADD CONSTRAINT "payout_batch_items_vendorId_fkey" FOREIGN KEY ("vendorId") REFERENCES "public"."vendors"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-┌─────────────────────────────────────────────────────────┐
-│  Update available 6.16.1 -> 8.0.0-rc.30                 │
-│                                                         │
-│  This is a major update - please follow the guide at    │
-│  https://pris.ly/d/major-version-upgrade                │
-│                                                         │
-│  Run the following to update                            │
-│    npm i --save-dev prisma@latest                       │
-│    npm i @prisma/client@latest                          │
-└─────────────────────────────────────────────────────────┘
+
 
 
 -- ── Value guards Prisma can't express ────────────────────────────────────────

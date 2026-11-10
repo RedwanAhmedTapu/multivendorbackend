@@ -6,13 +6,56 @@ const accountingService = new AccountingService();
 
 export class AccountingController {
   // ============================================
+  // 0. CHART OF ACCOUNTS SEEDING
+  // ============================================
+
+  async seedPlatformCOA(req: Request, res: Response) {
+    try {
+      const userId = (req as any).user?.id || (req as any).user?.userId;
+
+      const created = await accountingService.seedPlatformCOA(userId);
+
+      res.status(201).json({
+        success: true,
+        message: `Platform COA seeded successfully (${created.length} new accounts)`,
+        data: created,
+      });
+    } catch (error: any) {
+      res.status(400).json({
+        success: false,
+        message: error.message,
+      });
+    }
+  }
+
+  async seedVendorCOA(req: Request, res: Response) {
+    try {
+      const { vendorId } = req.params;
+      const userId = (req as any).user?.id || (req as any).user?.userId;
+
+      const created = await accountingService.seedVendorCOA(vendorId, userId);
+
+      res.status(201).json({
+        success: true,
+        message: `Vendor COA seeded successfully (${created.length} new accounts)`,
+        data: created,
+      });
+    } catch (error: any) {
+      res.status(400).json({
+        success: false,
+        message: error.message,
+      });
+    }
+  }
+
+  // ============================================
   // 1. CHART OF ACCOUNTS
   // ============================================
 
   async createChartOfAccount(req: Request, res: Response) {
     try {
       const userId = (req as any).user?.id || (req as any).user?.userId;
-      
+
       const data = {
         ...req.body,
         userId,
@@ -113,6 +156,20 @@ export class AccountingController {
         });
       }
 
+      // S-6 (2026-11-07): by-id reads must not cross entity boundaries —
+      // vendor-side identities (VENDOR, or EMPLOYEE with a vendorId) may only
+      // read accounts from their own entity's books. Previously this endpoint
+      // had no ownership check at all.
+      const role = String((req as any).user?.role ?? '').toUpperCase();
+      const user = (req as any).user;
+      const isVendorSide = role === 'VENDOR' || (role === 'EMPLOYEE' && user?.vendorId);
+      if (isVendorSide && !(account.entityType === 'VENDOR' && account.entityId === user.vendorId)) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied: You can only access your own data',
+        });
+      }
+
       res.json({
         success: true,
         data: account,
@@ -163,6 +220,22 @@ export class AccountingController {
         return res.status(404).json({
           success: false,
           message: 'Voucher not found',
+        });
+      }
+
+      // PHASE 2 BATCH 1C-7A (D3): a vendor may only read vouchers belonging
+      // to its own entity — platform vouchers (vendorId null) and other
+      // vendors' vouchers are denied regardless of how the id was obtained.
+      // S-6 (2026-11-07): vendor staff (EMPLOYEE with a vendorId) get the
+      // identical restriction — previously only role VENDOR was checked, so
+      // vendor employees could read any voucher by id.
+      const role = String((req as any).user?.role ?? '').toUpperCase();
+      const user = (req as any).user;
+      const isVendorSide = role === 'VENDOR' || (role === 'EMPLOYEE' && user?.vendorId);
+      if (isVendorSide && voucher.vendorId !== user.vendorId) {
+        return res.status(403).json({
+          success: false,
+          message: 'Access denied: You can only access your own data',
         });
       }
 
@@ -294,35 +367,90 @@ export class AccountingController {
       });
     }
   }
-async cancelVoucher(req: Request, res: Response) {
-  try {
-    const { id } = req.params;
-    const { reason } = req.body;
 
-    const userId = (req as any).user?.id || (req as any).user?.userId;
+  async cancelVoucher(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      const { reason } = req.body;
 
-    if (!reason || reason.trim() === '') {
-      throw new Error('Cancel reason is required');
+      const userId = (req as any).user?.id || (req as any).user?.userId;
+
+      if (!reason || reason.trim() === '') {
+        throw new Error('Cancel reason is required');
+      }
+
+      const voucher = await accountingService.cancelVoucher(
+        id,
+        reason,
+        userId
+      );
+
+      res.json({
+        success: true,
+        message: 'Voucher cancelled successfully',
+        data: voucher,
+      });
+    } catch (error: any) {
+      res.status(400).json({
+        success: false,
+        message: error.message,
+      });
     }
-
-    const voucher = await accountingService.cancelVoucher(
-      id,
-      reason,
-      userId
-    );
-
-    res.json({
-      success: true,
-      message: 'Voucher cancelled successfully',
-      data: voucher,
-    });
-  } catch (error: any) {
-    res.status(400).json({
-      success: false,
-      message: error.message,
-    });
   }
-}
+
+  // ============================================
+  // 2.1 VOUCHER APPROVAL WORKFLOW
+  // (spec: fraud-variant chargeback, ADJ-1 — vouchers held
+  // as approvalStatus=PENDING must go through these, not postVoucher)
+  // ============================================
+
+  async approveAndPostVoucher(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      const userId = (req as any).user?.id || (req as any).user?.userId;
+
+      const voucher = await accountingService.approveAndPostVoucher(id, userId);
+
+      res.json({
+        success: true,
+        message: 'Voucher approved and posted successfully',
+        data: voucher,
+      });
+    } catch (error: any) {
+      res.status(400).json({
+        success: false,
+        message: error.message,
+      });
+    }
+  }
+
+  async rejectVoucher(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      const { reason } = req.body;
+      const userId = (req as any).user?.id || (req as any).user?.userId;
+
+      if (!reason || reason.trim() === '') {
+        return res.status(400).json({
+          success: false,
+          message: 'Rejection reason is required',
+        });
+      }
+
+      const voucher = await accountingService.rejectVoucher(id, userId, reason);
+
+      res.json({
+        success: true,
+        message: 'Voucher rejected successfully',
+        data: voucher,
+      });
+    } catch (error: any) {
+      res.status(400).json({
+        success: false,
+        message: error.message,
+      });
+    }
+  }
 
   // ============================================
   // 3. AUTO VOUCHER TRIGGERS
@@ -586,6 +714,60 @@ async cancelVoucher(req: Request, res: Response) {
       res.json({
         success: true,
         ...result,
+      });
+    } catch (error: any) {
+      res.status(400).json({
+        success: false,
+        message: error.message,
+      });
+    }
+  }
+
+  // ============================================
+  // 7. RECONCILIATION (Phase 10 — §10.1-10.4)
+  // (spec: reconciliation batch job runs these before every
+  // settlement bank transfer; also useful as manual audit endpoints)
+  // ============================================
+
+  async getDriftReport(req: Request, res: Response) {
+    try {
+      const result = await accountingService.getDriftReport();
+
+      res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error: any) {
+      res.status(400).json({
+        success: false,
+        message: error.message,
+      });
+    }
+  }
+
+  async getOrphanedVouchers(req: Request, res: Response) {
+    try {
+      const result = await accountingService.getOrphanedVouchers();
+
+      res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error: any) {
+      res.status(400).json({
+        success: false,
+        message: error.message,
+      });
+    }
+  }
+
+  async getUnreversedRefunds(req: Request, res: Response) {
+    try {
+      const result = await accountingService.getUnreversedRefunds();
+
+      res.json({
+        success: true,
+        data: result,
       });
     } catch (error: any) {
       res.status(400).json({

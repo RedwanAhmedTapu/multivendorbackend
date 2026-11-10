@@ -10,6 +10,7 @@ import type {
 import pkg from '@prisma/client';
 import type { CustomerProfile } from '@/types/customer.types.ts';
 import * as XLSX from 'xlsx';
+import { ProductRatingService } from '../modules/product-module/services/product/product-rating.service.ts';
 
 const { PrismaClient, UserRole } = pkg;
 const prisma = new PrismaClient();
@@ -223,13 +224,19 @@ export class CustomerService {
       data.flaggedReason = reason;
     }
 
-    return prisma.review.update({
+    const updated = await prisma.review.update({
       where: { id: reviewId },
       data: {
         ...data,
         updatedAt: new Date()
       }
     });
+
+    // Keep the product's denormalized avgRating/reviewCount in sync —
+    // moderation can change which reviews should count.
+    await ProductRatingService.recalculate(updated.productId);
+
+    return updated;
   }
 
   // Get complaints

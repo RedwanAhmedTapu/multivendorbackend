@@ -1,0 +1,75 @@
+# docker-compose.yml
+#
+# Runs 3 copies of the API behind an Nginx load balancer — everything here
+# is free and self-hosted (only cost is your VPS). Database (Supabase),
+# Redis (Redis Cloud) and file storage (Cloudflare R2) all stay external,
+# exactly as configured in .env — this just horizontally scales the
+# stateless API layer in front of them.
+#
+# ⚠️ IMPORTANT — Socket.IO across multiple replicas:
+# nginx/nginx.conf uses ip_hash so a given client always hits the same
+# replica, which fixes the handshake. But a message sent by a customer
+# connected to api1 needs to reach a vendor connected to api2 — plain
+# `io.emit()` only reaches sockets on the SAME Node process. Since Redis is
+# already available here, add the official adapter before relying on this
+# in production:
+#     npm install @socket.io/redis-adapter redis
+#     // in server.ts, after creating `io`:
+#     import { createAdapter } from "@socket.io/redis-adapter";
+#     const pubClient = redisClient.duplicate();
+#     const subClient = redisClient.duplicate();
+#     await Promise.all([pubClient.connect(), subClient.connect()]);
+#     io.adapter(createAdapter(pubClient, subClient));
+# Without this, real-time chat will silently drop messages across replicas
+# once you scale past 1 instance.
+#
+# Usage:
+#   docker compose up --build -d
+#   docker compose logs -f
+#   docker compose down
+
+services:
+  api1:
+    build: .
+    env_file: .env
+    environment:
+      - PORT=5000
+    restart: unless-stopped
+    volumes:
+      - uploads_data:/app/uploads
+
+  api2:
+    build: .
+    env_file: .env
+    environment:
+      - PORT=5000
+    restart: unless-stopped
+    volumes:
+      - uploads_data:/app/uploads
+
+  api3:
+    build: .
+    env_file: .env
+    environment:
+      - PORT=5000
+    restart: unless-stopped
+    volumes:
+      - uploads_data:/app/uploads
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api1
+      - api2
+      - api3
+    restart: unless-stopped
+
+volumes:
+  # Shared across replicas so any instance can serve a file another
+  # instance saved. If you're already fully on Cloudflare R2 for uploads,
+  # this volume becomes unnecessary — check src/lib/r2-*.ts usage first.
+  uploads_data:

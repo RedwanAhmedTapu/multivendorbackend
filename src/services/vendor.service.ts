@@ -10,7 +10,9 @@ import {
   SubscriptionPlan,
   VerificationStatus,
   AccountType,
+  BusinessType,
 } from "@prisma/client";
+import { AccountClass, AccountTypeInAccounting, AccountGroup, AccountNature } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import type {
   CreateVendorRequest,
@@ -30,7 +32,6 @@ import type {
   VendorExportOptions,
   VendorPersonalInfoRequest,
   VendorAddressRequest,
-  VendorBankInfoRequest,
   VendorDocumentRequest,
   VendorSubscriptionRequest,
   VendorOnboardingStatus,
@@ -38,15 +39,70 @@ import type {
   CompleteVendorProfile,
 } from "@/types/vendor.types.ts";
 import { deleteFromR2 } from "../lib/cloudflare-r2.ts";
-
+import { PLATFORM_ACCOUNTS, VENDOR_ACCOUNT_TEMPLATE } from "../constants/chartOfAccountTemplates.ts";
+import { invalidateVendorProductCaches } from "../config/cache.ts";
+import { publishedReviewFilter } from "../modules/product-module/services/product/review-moderation.scope.ts";
+import { posSubscriptionService } from "./pos-subscription.service.ts";
 const prisma = new PrismaClient();
 
+/** Test hook (same pattern as orderServiceDb / paymentServiceDb): this module's own client. */
+export const vendorServiceDb = prisma;
+
+/**
+ * Phase 1 S3/P3: a vendor status change alters which products are public
+ * (only ACTIVE vendors' products are), so drop the cached public views of
+ * this vendor's products. Runs after the status write commits; best-effort —
+ * a cache failure never fails the status change (entries expire in ≤5 min).
+ */
+export async function invalidateVendorPublicCaches(vendorId: string) {
+  try {
+    const products = await prisma.product.findMany({
+      where: { vendorId },
+      select: { id: true, slug: true },
+    });
+    await invalidateVendorProductCaches(vendorId, products);
+  } catch (err) {
+    console.warn(`[cache] vendor ${vendorId} product cache invalidation failed:`, (err as Error).message);
+  }
+}
+
 export class VendorService {
+  
+
+
   // ================================
+  // CHART OF ACCOUNTS — created once, only when a vendor is approved/verified.
+  // Idempotent: safe to call from multiple approval paths without duplicating.
+  // ================================
+
+  private async ensureVendorChartOfAccounts(vendorId: string, tx: any = prisma) {
+    for (const acc of VENDOR_ACCOUNT_TEMPLATE) {
+      const existing = await tx.chartOfAccount.findFirst({
+        where: { code: acc.code, entityType: "VENDOR", entityId: vendorId },
+      });
+      if (existing) continue;
+
+      await tx.chartOfAccount.create({
+        data: {
+          code: acc.code,
+          name: acc.name,
+          accountClass: acc.accountClass,
+          accountType: acc.accountType,
+          group: acc.group,
+          nature: acc.nature,
+          entityType: "VENDOR",
+          entityId: vendorId,
+          isSystem: true,
+          isActive: true,
+          canDelete: false,
+          description: `Auto-created on vendor approval: ${acc.name}`,
+        },
+      });
+    }
+  }
+// ================================
   // VENDOR CRUD OPERATIONS
   // ================================
- 
-
   async createVendor(data: CreateVendorRequest) {
     const hashedPassword = await bcrypt.hash(data.password, 10);
 
@@ -183,7 +239,7 @@ export class VendorService {
               followers: true,
               commissions: true,
               payouts: true,
-              advertisements: true,
+              adCampaigns: true,
             },
           },
         },
@@ -264,7 +320,7 @@ export class VendorService {
             },
           },
           personalInfo: true,
-          bankInfo: true,
+         paymentAccounts: { include: { bankBranch: { include: { bank: true } } } },
           documents: {
             // ADDED: Include documents array
             take: 5, // Limit to recent documents
@@ -298,18 +354,29 @@ export class VendorService {
     };
   }
 
-  async updateVendorProfile(id: string, data: UpdateVendorProfileRequest) {
-    // Get current vendor data to check for old avatar
+  async updateVendorProfile(id: string, data: any) { // data টাইপ আপডেট করে দিন
     const currentVendor = await this.getVendorById(id);
-    console.log(data);
-    // Update vendor
+    
+    // User এর জন্য আলাদা অবজেক্ট তৈরি করছি
+    const userData: any = {};
+    if (data.email !== undefined) userData.email = data.email;
+    if (data.phone !== undefined) userData.phone = data.phone;
+
     const vendor = await prisma.vendor.update({
       where: { id },
       data: {
         storeName: data.storeName,
         avatar: data.avatar,
         accountType: data.accountType,
+        businessType: data.businessType,
         status: data.status,
+        
+        // এখানে User মডেলটি নেস্টেড আপডেট করা হচ্ছে
+        ...(Object.keys(userData).length > 0 && {
+          user: {
+            update: userData
+          }
+        })
       },
       include: {
         user: {
@@ -322,20 +389,39 @@ export class VendorService {
           },
         },
         personalInfo: true,
-        bankInfo: true,
+        paymentAccounts: { include: { bankBranch: { include: { bank: true } } } },
         pickupAddress: true,
       },
     });
 
+    if (data.status !== undefined && data.status !== currentVendor?.status) {
+      await invalidateVendorPublicCaches(id);
+    }
     return vendor;
-  }
+}
 
   async updateVendorStatus(id: string, status: VendorStatus) {
-    return await prisma.vendor.update({
+  const updated = await prisma.$transaction(async (tx) => {
+    const vendor = await tx.vendor.update({
       where: { id },
       data: { status },
     });
-  }
+
+    // Create the vendor's standard chart-of-accounts the first time it
+    // becomes ACTIVE — idempotent, so re-approving or re-activating later
+    // won't duplicate accounts.
+    if (status === VendorStatus.ACTIVE) {
+      await this.ensureVendorChartOfAccounts(id, tx);
+      // One-time POS trial (only if the admin enabled the trial policy);
+      // re-approval never grants a second one (PosTrialGrant PK = vendorId).
+      await posSubscriptionService.grantTrialOnApproval(tx, id, "VENDOR_APPROVAL");
+    }
+
+    return vendor;
+  });
+  await invalidateVendorPublicCaches(id);
+  return updated;
+}
 
   async deleteVendor(id: string) {
     return await prisma.$transaction(async (tx) => {
@@ -456,13 +542,9 @@ export class VendorService {
   async getCompleteVendorProfile(
     vendorId: string
   ): Promise<CompleteVendorProfile | null> {
-    console.log(
-      "🔍 [DEBUG] Starting getCompleteVendorProfile for vendor:",
-      vendorId
-    );
+   
 
     try {
-      console.log("🔍 [DEBUG] Executing Prisma query...");
 
       const result = await prisma.vendor.findUnique({
         where: { id: vendorId },
@@ -477,8 +559,8 @@ export class VendorService {
             },
           },
           personalInfo: true,
-          bankInfo: true,
-          documents: true, // ✅ This should be documents
+          paymentAccounts: { include: { bankBranch: { include: { bank: true } } } },
+          documents: true, 
           pickupAddress: true,
           settings: true,
           subscription: true,
@@ -494,12 +576,7 @@ export class VendorService {
         },
       });
 
-      console.log("✅ [DEBUG] Query executed successfully");
-      console.log(
-        "✅ [DEBUG] Result:",
-        result ? "Found vendor" : "Vendor not found"
-      );
-
+     
       return result as CompleteVendorProfile | null;
     } catch (error: any) {
       console.error("❌ [DEBUG] Error in getCompleteVendorProfile:", error);
@@ -563,51 +640,9 @@ export class VendorService {
   // BANK INFO MANAGEMENT
   // ================================
 
-  async createOrUpdateBankInfo(vendorId: string, data: VendorBankInfoRequest) {
-    return await prisma.$transaction(async (tx) => {
-      const bankInfo = await tx.vendorBankInfo.upsert({
-        where: { vendorId },
-        update: {
-          accountName: data.accountName,
-          accountNumber: data.accountNumber,
-          bankName: data.bankName,
-          branchName: data.branchName,
-        },
-        create: {
-          vendorId,
-          accountName: data.accountName,
-          accountNumber: data.accountNumber,
-          bankName: data.bankName,
-          branchName: data.branchName,
-        },
-      });
+  
 
-      // Update onboarding progress
-      await tx.vendorOnboardingChecklist.upsert({
-        where: { vendorId },
-        update: {
-          bankInfoComplete: true,
-          overallComplete: await this.calculateOverallCompletion(tx, vendorId),
-        },
-        create: {
-          vendorId,
-          personalInfoComplete: false,
-          addressComplete: false,
-          bankInfoComplete: true,
-          documentsComplete: false,
-          overallComplete: false,
-        },
-      });
-
-      return bankInfo;
-    });
-  }
-
-  async getBankInfo(vendorId: string) {
-    return await prisma.vendorBankInfo.findUnique({
-      where: { vendorId },
-    });
-  }
+ 
 
   // ================================
   // DOCUMENT MANAGEMENT - UPDATED
@@ -841,14 +876,16 @@ export class VendorService {
     });
   }
 
-  async deleteDocument(documentId: string) {
+  /** ownerVendorId (a VENDOR caller's own id) scopes the delete: another
+   *  vendor's document is reported as not found. ADMIN passes none. */
+  async deleteDocument(documentId: string, ownerVendorId?: string) {
     return await prisma.$transaction(async (tx) => {
       const document = await tx.vendorDocument.findUnique({
         where: { id: documentId },
       });
 
-      if (!document) {
-        throw new Error("Document not found");
+      if (!document || (ownerVendorId !== undefined && document.vendorId !== ownerVendorId)) {
+        throw Object.assign(new Error("Document not found"), { statusCode: 404 });
       }
 
       // Delete from R2
@@ -973,20 +1010,7 @@ export class VendorService {
   // VERIFICATION MANAGEMENT
   // ================================
 
-  async verifyVendor(vendorId: string) {
-    return await prisma.$transaction(async (tx) => {
-      const vendor = await tx.vendor.update({
-        where: { id: vendorId },
-        data: {
-          verificationStatus: VerificationStatus.VERIFIED,
-          verifiedAt: new Date(),
-          status: VendorStatus.ACTIVE,
-        },
-      });
-
-      return vendor;
-    });
-  }
+ 
 
   async rejectVendor(vendorId: string, rejectionReason: string) {
     return await prisma.vendor.update({
@@ -1033,15 +1057,14 @@ async updateVerificationStatus(
  * Verify vendor - approve documents and activate account
  */
 async verifyVendor(vendorId: string, approvedBy?: string) {
-  return await prisma.$transaction(async (tx) => {
-    // Check if all required documents are uploaded and approved
+  const verified = await prisma.$transaction(async (tx) => {
     const vendor = await tx.vendor.findUnique({
       where: { id: vendorId },
       include: {
         documents: true,
         onboarding: true,
         personalInfo: true,
-        bankInfo: true,
+        paymentAccounts: { include: { bankBranch: { include: { bank: true } } } },
         pickupAddress: true
       }
     });
@@ -1050,31 +1073,25 @@ async verifyVendor(vendorId: string, approvedBy?: string) {
       throw new Error('Vendor not found');
     }
 
-    // Validate onboarding completion
     if (!vendor.onboarding?.overallComplete) {
       throw new Error('Vendor must complete all onboarding steps before verification');
     }
 
-    // Check if required documents exist
     if (!vendor.documents || vendor.documents.length === 0) {
       throw new Error('No documents uploaded for verification');
     }
 
-    // Update all documents to APPROVED
     await tx.vendorDocument.updateMany({
       where: { vendorId },
-      data: {
-        verificationStatus: 'APPROVED'
-      }
+      data: { verificationStatus: 'APPROVED' }
     });
 
-    // Update vendor verification status
     const updatedVendor = await tx.vendor.update({
       where: { id: vendorId },
       data: {
         verificationStatus: VerificationStatus.VERIFIED,
         verifiedAt: new Date(),
-        status: VendorStatus.ACTIVE, // Automatically activate when verified
+        status: VendorStatus.ACTIVE,
         rejectedAt: null,
         rejectionReason: null
       },
@@ -1086,10 +1103,20 @@ async verifyVendor(vendorId: string, approvedBy?: string) {
       }
     });
 
+    // Vendor is now ACTIVE — create their standard chart-of-accounts.
+    // Idempotent: won't duplicate if updateVendorStatus already ran this.
+    await this.ensureVendorChartOfAccounts(vendorId, tx);
+
+    // One-time POS trial (policy-gated, at most once per vendor — rejection
+    // followed by re-verification finds the existing grant and does nothing).
+    await posSubscriptionService.grantTrialOnApproval(tx, vendorId, "VENDOR_VERIFICATION");
+
     // TODO: Send verification success email/notification
 
     return updatedVendor;
   });
+  await invalidateVendorPublicCaches(vendorId);
+  return verified;
 }
 
 /**
@@ -1131,7 +1158,7 @@ async rejectVendorVerification(vendorId: string, rejectionReason: string) {
  * Suspend vendor verification (e.g., expired documents, fraud suspicion)
  */
 async suspendVendorVerification(vendorId: string, reason?: string) {
-  return await prisma.vendor.update({
+  const suspended = await prisma.vendor.update({
     where: { id: vendorId },
     data: {
       verificationStatus: VerificationStatus.SUSPENDED,
@@ -1144,6 +1171,8 @@ async suspendVendorVerification(vendorId: string, reason?: string) {
       documents: true
     }
   });
+  await invalidateVendorPublicCaches(vendorId);
+  return suspended;
 }
 
 /**
@@ -1457,7 +1486,7 @@ async requestReVerification(vendorId: string) {
         _count: true,
       }),
       prisma.review.aggregate({
-        where: { product: { vendorId } },
+       where: { product: { vendorId }, ...publishedReviewFilter() },
         _avg: { rating: true },
       }),
     ]);

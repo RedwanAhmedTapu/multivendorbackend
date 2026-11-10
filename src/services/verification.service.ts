@@ -126,7 +126,9 @@ export async function sendOtp(phone: string): Promise<OtpResponse> {
     return { message: "OTP sent successfully", expiresIn: ttl };
     
   } catch (error) {
-    console.error("❌ SMS sending failed:", error);
+    // Phase 4: never log the error object — an axios error carries the request
+    // config, whose URL holds the SMS API key and the OTP text.
+    console.error("❌ SMS sending failed:", (error as any)?.code ?? (error as any)?.response?.status ?? (error as Error)?.message ?? "error");
     // Clean up stored OTP on failure
     await redisClient.del(`otp:${normalizedPhone}`);
     throw new Error("Failed to send OTP. Please try again.");
@@ -260,7 +262,7 @@ export async function verifyEmail(
   });
 
   if (!lockAcquired) {
-    console.log(`⏳ Token ${token} is already being processed`);
+    console.log("⏳ Email verification already in progress"); // Phase 4: never log the token
     throw new Error("Verification already in progress. Please wait.");
   }
 
@@ -269,7 +271,7 @@ export async function verifyEmail(
     const storedData = await redisClient.get(tokenKey);
     
     if (!storedData) {
-      console.log(`❌ No verification data found for token: ${token}`);
+      console.log("❌ No verification data found for the email token"); // Phase 4: never log the token
       return null;
     }
 

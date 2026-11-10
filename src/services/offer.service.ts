@@ -10,6 +10,18 @@ import type {
 
 const prisma = new PrismaClient();
 
+/** Test hook (same pattern as orderServiceDb / paymentServiceDb): this module's own client. */
+export const offerServiceDb = prisma;
+
+/** Offer approval/rejection refused: 400 bad input, 404 missing, 409 not PENDING. */
+export class OfferTransitionError extends Error {
+  statusCode: 400 | 404 | 409;
+  constructor(statusCode: 400 | 404 | 409, message: string) {
+    super(message);
+    this.statusCode = statusCode;
+  }
+}
+
 // =========================== 
 // TYPES AND INTERFACES
 // ===========================
@@ -370,7 +382,7 @@ class AdminOfferService extends BaseOfferService {
     
     return offers;
   }
-  
+ 
   async createFlashSale(adminId: string, data: {
     title: string;
     productIds: string[];
@@ -433,18 +445,54 @@ class AdminOfferService extends BaseOfferService {
     });
   }
   
-  async approveVendorOffer(adminId: string, offerId: string, approved: boolean): Promise<Offer> {
-    const offer = await prisma.offer.update({
-      where: { id: offerId },
-      data: { 
-        status: approved ? 'APPROVED' : 'REJECTED',
-        isActive: approved 
-      }
+  /**
+   * PENDING → APPROVED / REJECTED only. The status change is a conditional
+   * claim (WHERE id AND status = PENDING), so a repeated or concurrent
+   * decision updates 0 rows and is refused with 409 instead of overwriting
+   * the first one. A rejection needs a non-empty reason.
+   *
+   * Audit: written to AuditLog (the audit table the product-approval flow
+   * uses) in the same transaction as the claim, with the reason in newData.
+   * logOfferActivity() targets an ActivityLog model the generated client
+   * does not contain, so it could never record these decisions.
+   * adminUserId must be a User.id (AuditLog.user → User).
+   */
+  async approveVendorOffer(adminUserId: string, offerId: string, approved: boolean, reason?: string): Promise<Offer> {
+    const rejectionReason = typeof reason === 'string' ? reason.trim() : '';
+    if (!approved && !rejectionReason) {
+      throw new OfferTransitionError(400, 'A rejection reason is required');
+    }
+
+    const status = approved ? 'APPROVED' : 'REJECTED';
+    const claimed = await prisma.$transaction(async (tx) => {
+      const result = await tx.offer.updateMany({
+        where: { id: offerId, status: 'PENDING' },
+        data: { 
+          status,
+          isActive: approved 
+        }
+      });
+      if (result.count === 0) return false;
+
+      await tx.auditLog.create({
+        data: {
+          userId: adminUserId,
+          action: `OFFER_${status}`,
+          entity: 'Offer',
+          entityId: offerId,
+          oldData: { status: 'PENDING' },
+          newData: approved ? { status } : { status, reason: rejectionReason },
+        }
+      });
+      return true;
     });
+    if (!claimed) {
+      const current = await prisma.offer.findUnique({ where: { id: offerId }, select: { status: true } });
+      if (!current) throw new OfferTransitionError(404, 'Offer not found');
+      throw new OfferTransitionError(409, `Offer is already ${current.status}; only PENDING offers can be approved or rejected`);
+    }
     
-    await this.logOfferActivity(offerId, approved ? 'APPROVED' : 'REJECTED', adminId, 'ADMIN');
-    
-    return offer;
+    return prisma.offer.findUniqueOrThrow({ where: { id: offerId } });
   }
   
   async getOfferAnalytics(offerId?: string, dateRange?: { start: Date; end: Date }) {
@@ -1618,7 +1666,52 @@ class CustomerOfferService extends BaseOfferService {
     
     return offers;
   }
-  
+   async getOffersForProduct(productId: string): Promise<Offer[]> {
+  const product = await prisma.product.findUnique({
+    where: { id: productId },
+    select: { id: true, vendorId: true, categoryId: true }
+  });
+
+  if (!product) throw new Error('Product not found');
+
+  const now = new Date();
+
+  return prisma.offer.findMany({
+    where: {
+      isActive: true,
+      status: 'APPROVED',
+      validFrom: { lte: now },
+      OR: [{ validTo: null }, { validTo: { gte: now } }],
+      AND: [
+        {
+          OR: [
+            { applicableToAll: true },
+            { targetProducts: { some: { productId } } },
+            product.categoryId
+              ? { targetCategories: { some: { categoryId: product.categoryId } } }
+              : {},
+            product.vendorId
+              ? {
+                  OR: [
+                    { createdByVendorId: product.vendorId },
+                    { targetVendors: { some: { vendorId: product.vendorId } } }
+                  ]
+                }
+              : {}
+          ]
+        }
+      ]
+    },
+    include: {
+      countdownConfig: true,
+      voucherConfig: true,
+      buyXGetYOffer: { include: { buyProduct: true, getProduct: true } },
+      offerStackRules: true,
+      createdByVendor: { include: { user: true } }
+    },
+    orderBy: [{ priority: 'desc' }, { createdAt: 'desc' }]
+  });
+}
   async applyVoucherCode(userId: string, code: string, orderData: {
     items: OrderItemData[];
     subtotal: number;

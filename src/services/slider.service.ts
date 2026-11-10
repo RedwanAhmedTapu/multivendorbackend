@@ -10,6 +10,8 @@ export class SliderService {
     link?: string;
     buttonText?: string;
     buttonLink?: string;
+    type: "HOMEPAGE" | "VENDORPAGE";
+    vendorId?: string;
   }) {
     return prisma.slider.create({
       data: {
@@ -19,14 +21,24 @@ export class SliderService {
         imageUrl: data.imageUrl,
         link: data.link,
         buttonText: data.buttonText,
-        buttonLink: data.buttonLink,
-        type: data.type, // Ensure 'type' is provided in the input data
+        // If admin picked a vendor but didn't type a custom link, send the
+        // slide straight to that vendor's storefront on click.
+        buttonLink: data.buttonLink || (data.vendorId ? `/store/${data.vendorId}` : undefined),
+        type: data.type,
+        vendorId: data.vendorId || undefined,
       },
     });
   }
 
-  async findAll() {
+  async findAll(filter?: { type?: "HOMEPAGE" | "VENDORPAGE"; vendorId?: string }) {
     return prisma.slider.findMany({
+      where: {
+        ...(filter?.type ? { type: filter.type } : {}),
+        ...(filter?.vendorId ? { vendorId: filter.vendorId } : {}),
+      },
+      include: {
+        vendor: { select: { id: true, storeName: true, avatar: true } },
+      },
       orderBy: [
         { createdAt: 'desc' }
       ]
@@ -49,9 +61,9 @@ export class SliderService {
         imageUrl: data.imageUrl,
         link: data.link,
         buttonText: data.buttonText,
-        buttonLink: data.buttonLink,
-        type: data.type, // Ensure 'type' is provided in the input data
-
+        buttonLink: data.buttonLink || (data.vendorId ? `/store/${data.vendorId}` : undefined),
+        type: data.type,
+        vendorId: data.vendorId || undefined,
       },
     });
   }

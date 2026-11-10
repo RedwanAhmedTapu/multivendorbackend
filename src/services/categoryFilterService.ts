@@ -1,5 +1,6 @@
 // services/categoryFilterService.ts
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from "@prisma/client";
+import { PUBLIC_VENDOR_WHERE } from "../modules/product-module/utils/filter-builder.util.ts";
 
 // ===========================
 // TYPE DEFINITIONS
@@ -15,7 +16,7 @@ export interface FilterableAttribute {
   id: string;
   name: string;
   slug: string;
-  type: 'TEXT' | 'NUMBER' | 'BOOLEAN' | 'SELECT';
+  type: "TEXT" | "NUMBER" | "BOOLEAN" | "SELECT";
   unit?: string;
   values: FilterableAttributeValue[];
 }
@@ -51,26 +52,57 @@ export interface CategoryFilterResponse {
 
 const prisma = new PrismaClient();
 
+/** Test hook (same pattern as orderServiceDb / paymentServiceDb): this module's own client. */
+export const categoryFilterDb = prisma;
+
 export class CategoryFilterService {
-  
+  // services/categoryFilterService.ts
+
+  private categoryTreeCache: {
+    data: Array<{
+      id: string;
+      name: string;
+      slug: string;
+      parentId: string | null;
+    }>;
+    expiresAt: number;
+  } | null = null;
+
+  private async getAllCategoriesFlat() {
+    const now = Date.now();
+    if (this.categoryTreeCache && this.categoryTreeCache.expiresAt > now) {
+      return this.categoryTreeCache.data;
+    }
+    const categories = await prisma.category.findMany({
+      select: { id: true, name: true, slug: true, parentId: true },
+    });
+    this.categoryTreeCache = {
+      data: categories,
+      expiresAt: now + 5 * 60 * 1000,
+    }; // 5 min cache
+    return categories;
+  }
+
   /**
    * Get all descendant category IDs (children, grandchildren, etc.)
    */
-  private async getDescendantCategoryIds(categoryId: string): Promise<string[]> {
+  private async getDescendantCategoryIds(
+    categoryId: string,
+  ): Promise<string[]> {
     const descendants: string[] = [];
-    
+
     const findDescendants = async (parentId: string) => {
       const children = await prisma.category.findMany({
         where: { parentId },
-        select: { id: true }
+        select: { id: true },
       });
-      
+
       for (const child of children) {
         descendants.push(child.id);
         await findDescendants(child.id);
       }
     };
-    
+
     await findDescendants(categoryId);
     return descendants;
   }
@@ -78,35 +110,26 @@ export class CategoryFilterService {
   /**
    * Get parent category hierarchy (breadcrumb)
    */
-  private async getCategoryBreadcrumb(categoryId: string): Promise<CategoryHierarchy[]> {
+  private async getCategoryBreadcrumb(
+    categoryId: string,
+  ): Promise<CategoryHierarchy[]> {
+    const all = await this.getAllCategoriesFlat();
+    const byId = new Map(all.map((c) => [c.id, c]));
     const breadcrumb: CategoryHierarchy[] = [];
     let currentId: string | null = categoryId;
     let level = 0;
-    
     while (currentId) {
-      const category = await prisma.category.findUnique({
-        where: { id: currentId },
-        select: {
-          id: true,
-          name: true,
-          slug: true,
-          parentId: true
-        }
-      });
-      
+      const category = byId.get(currentId);
       if (!category) break;
-      
       breadcrumb.unshift({
         id: category.id,
         name: category.name,
         slug: category.slug,
-        level
+        level,
       });
-      
       currentId = category.parentId;
       level++;
     }
-    
     return breadcrumb;
   }
 
@@ -114,63 +137,83 @@ export class CategoryFilterService {
    * Get ALL category IDs including the parent and ALL descendants
    */
   private async getAllCategoryIds(categoryId: string): Promise<string[]> {
-    const allDescendants = await this.getDescendantCategoryIds(categoryId);
-    return [categoryId, ...allDescendants];
+    const all = await this.getAllCategoriesFlat();
+    const childrenByParent = new Map<string, string[]>();
+    for (const c of all) {
+      if (c.parentId) {
+        if (!childrenByParent.has(c.parentId))
+          childrenByParent.set(c.parentId, []);
+        childrenByParent.get(c.parentId)!.push(c.id);
+      }
+    }
+    const result: string[] = [categoryId];
+    const stack = [categoryId];
+    while (stack.length) {
+      const current = stack.pop()!;
+      const children = childrenByParent.get(current) || [];
+      for (const child of children) {
+        result.push(child);
+        stack.push(child);
+      }
+    }
+    return result;
   }
-
   /**
    * Get filterable attributes with product counts based on unified structure
    */
   private async getFilterableAttributes(
     categoryIds: string[],
-    includeProductCounts: boolean = false
+    includeProductCounts: boolean = false,
   ): Promise<FilterableAttribute[]> {
     try {
       // Get category attributes configuration
       const categoryAttributes = await prisma.categoryAttribute.findMany({
         where: {
           categoryId: { in: categoryIds },
-          filterable: true
+          filterable: true,
         },
         include: {
           attribute: {
             include: {
-              values: true // For SELECT type attributes
-            }
-          }
+              values: true, // For SELECT type attributes
+            },
+          },
         },
         orderBy: {
-          sortOrder: 'asc'
-        }
+          sortOrder: "asc",
+        },
       });
 
       if (categoryAttributes.length === 0) {
         return [];
       }
 
-      const attributeIds = categoryAttributes.map(ca => ca.attributeId);
+      const attributeIds = categoryAttributes.map((ca) => ca.attributeId);
 
       // Get all product attributes for these categories and attributes
-      const productAttributes = includeProductCounts ? await prisma.productAttribute.findMany({
-        where: {
-          attributeId: { in: attributeIds },
-          product: {
-            categoryId: { in: categoryIds },
-            approvalStatus: 'ACTIVE'
-          }
-        },
-        include: {
-          product: {
-            select: { id: true }
-          },
-          attribute: {
+      const productAttributes = includeProductCounts
+        ? await prisma.productAttribute.findMany({
+            where: {
+              attributeId: { in: attributeIds },
+              product: {
+                categoryId: { in: categoryIds },
+                approvalStatus: "ACTIVE",
+                vendor: PUBLIC_VENDOR_WHERE,
+              },
+            },
             include: {
-              values: true
-            }
-          },
-          attributeValue: true // For SELECT type
-        }
-      }) : [];
+              product: {
+                select: { id: true },
+              },
+              attribute: {
+                include: {
+                  values: true,
+                },
+              },
+              attributeValue: true, // For SELECT type
+            },
+          })
+        : [];
 
       // Build attribute map
       const attributeMap = new Map<string, FilterableAttribute>();
@@ -185,15 +228,18 @@ export class CategoryFilterService {
           slug: attr.slug,
           type: attr.type as any,
           unit: attr.unit || undefined,
-          values: []
+          values: [],
         };
 
         if (includeProductCounts) {
           // Count products by attribute values
-          const valueCounts = new Map<string, { id: string; displayValue: string; count: Set<string> }>();
+          const valueCounts = new Map<
+            string,
+            { id: string; displayValue: string; count: Set<string> }
+          >();
 
           const relevantProductAttrs = productAttributes.filter(
-            pa => pa.attributeId === attr.id
+            (pa) => pa.attributeId === attr.id,
           );
 
           for (const pa of relevantProductAttrs) {
@@ -202,7 +248,7 @@ export class CategoryFilterService {
 
             // Extract value based on attribute type
             switch (attr.type) {
-              case 'SELECT':
+              case "SELECT":
                 if (pa.attributeValue) {
                   displayValue = pa.attributeValue.value;
                   valueId = pa.attributeValue.id;
@@ -210,17 +256,23 @@ export class CategoryFilterService {
                   continue;
                 }
                 break;
-              
-              case 'TEXT':
+
+              case "TEXT":
                 if (pa.valueString) {
                   displayValue = pa.valueString;
-                  valueId = pa.valueString.toLowerCase().replace(/\s+/g, '-');
+                  // ✅ FIX: আগে slugify করা হতো (`toLowerCase().replace(/\s+/g,'-')`),
+                  // যেটা lossy ছিল (দুইটা ভিন্ন string একই slug-এ কোলাইড করতে পারত) এবং
+                  // filter-builder.util.ts-এ raw valueString এর সাথে ম্যাচ করানো যেত না।
+                  // এখন raw value-ই id হিসেবে পাঠানো হচ্ছে, trim করে — কারণ এটাই
+                  // ব্যাক ফিল্টার করার সময় hুবহু ফেরত আসবে (filter-builder.util.ts এর
+                  // `valueString: { in: valueIds, mode: "insensitive" }` এর সাথে সরাসরি মেলে)।
+                  valueId = pa.valueString.trim();
                 } else {
                   continue;
                 }
                 break;
-              
-              case 'NUMBER':
+
+              case "NUMBER":
                 if (pa.valueNumber !== null && pa.valueNumber !== undefined) {
                   displayValue = pa.valueNumber.toString();
                   if (attr.unit) displayValue += ` ${attr.unit}`;
@@ -229,26 +281,26 @@ export class CategoryFilterService {
                   continue;
                 }
                 break;
-              
-              case 'BOOLEAN':
+
+              case "BOOLEAN":
                 if (pa.valueBoolean !== null && pa.valueBoolean !== undefined) {
-                  displayValue = pa.valueBoolean ? 'Yes' : 'No';
+                  displayValue = pa.valueBoolean ? "Yes" : "No";
                   valueId = pa.valueBoolean.toString();
                 } else {
                   continue;
                 }
                 break;
-              
+
               default:
                 continue;
             }
 
             // Track unique products for this value
             if (!valueCounts.has(valueId)) {
-              valueCounts.set(valueId, { 
+              valueCounts.set(valueId, {
                 id: valueId,
                 displayValue: displayValue,
-                count: new Set<string>() 
+                count: new Set<string>(),
               });
             }
             valueCounts.get(valueId)!.count.add(pa.product.id);
@@ -259,18 +311,17 @@ export class CategoryFilterService {
             .map(([_, data]) => ({
               id: data.id,
               value: data.displayValue,
-              productCount: data.count.size
+              productCount: data.count.size,
             }))
-            .filter(v => v.productCount > 0)
+            .filter((v) => v.productCount > 0)
             .sort((a, b) => b.productCount - a.productCount);
-
         } else {
           // Simple mode: just return available attribute values without counts
-          if (attr.type === 'SELECT' && attr.values.length > 0) {
-            filterableAttr.values = attr.values.map(av => ({
+          if (attr.type === "SELECT" && attr.values.length > 0) {
+            filterableAttr.values = attr.values.map((av) => ({
               id: av.id,
               value: av.value,
-              productCount: 0
+              productCount: 0,
             }));
           } else {
             // For other types, we'll populate values dynamically from products
@@ -286,9 +337,8 @@ export class CategoryFilterService {
       }
 
       return Array.from(attributeMap.values());
-
     } catch (error) {
-      console.error('Error in getFilterableAttributes:', error);
+      console.error("Error in getFilterableAttributes:", error);
       return [];
     }
   }
@@ -302,22 +352,23 @@ export class CategoryFilterService {
         where: {
           product: {
             categoryId: { in: categoryIds },
-            approvalStatus: 'ACTIVE'
-          }
+            approvalStatus: "ACTIVE",
+            vendor: PUBLIC_VENDOR_WHERE,
+          },
         },
         _min: { price: true },
-        _max: { price: true }
+        _max: { price: true },
       });
 
       return {
-        min: Math.floor(priceData._min.price || 0),
-        max: Math.ceil(priceData._max.price || 10000)
+        min: Math.floor(Number(priceData._min.price || 0)),
+        max: Math.ceil(Number(priceData._max.price || 10000)),
       };
     } catch (error) {
-      console.error('Error in getPriceRange:', error);
+      console.error("Error in getPriceRange:", error);
       return {
         min: 0,
-        max: 10000
+        max: 10000,
       };
     }
   }
@@ -330,11 +381,12 @@ export class CategoryFilterService {
       return await prisma.product.count({
         where: {
           categoryId: { in: categoryIds },
-          approvalStatus: 'ACTIVE'
-        }
+          approvalStatus: "ACTIVE",
+          vendor: PUBLIC_VENDOR_WHERE,
+        },
       });
     } catch (error) {
-      console.error('Error in getProductCount:', error);
+      console.error("Error in getProductCount:", error);
       return 0;
     }
   }
@@ -344,31 +396,26 @@ export class CategoryFilterService {
    * @param includeProductCounts - Whether to count products for each filter value (slower but more accurate)
    */
   async getCategoryFilterData(
-    categoryId: string, 
-    includeProductCounts: boolean = false
+    categoryId: string,
+    includeProductCounts: boolean = false,
   ): Promise<CategoryFilterResponse> {
     try {
-      // Verify category exists
       const category = await prisma.category.findUnique({
         where: { id: categoryId },
-        select: { id: true, name: true, slug: true }
+        select: { id: true, name: true, slug: true },
       });
+      if (!category) throw new Error("Category not found");
 
-      if (!category) {
-        throw new Error('Category not found');
-      }
+      // ✅ run everything independent in parallel instead of sequentially
+      const [allCategoryIds, breadcrumb] = await Promise.all([
+        this.getAllCategoryIds(categoryId),
+        this.getCategoryBreadcrumb(categoryId),
+      ]);
 
-      // Get ALL category IDs (including the selected category and ALL descendants)
-      const allCategoryIds = await this.getAllCategoryIds(categoryId);
-      
-      // Get breadcrumb
-      const breadcrumb = await this.getCategoryBreadcrumb(categoryId);
-
-      // Fetch all filter data in parallel
       const [attributes, priceRange, totalProducts] = await Promise.all([
         this.getFilterableAttributes(allCategoryIds, includeProductCounts),
         this.getPriceRange(allCategoryIds),
-        this.getProductCount(allCategoryIds)
+        this.getProductCount(allCategoryIds),
       ]);
 
       return {
@@ -376,19 +423,13 @@ export class CategoryFilterService {
           id: category.id,
           name: category.name,
           slug: category.slug,
-          breadcrumb
+          breadcrumb,
         },
-        filters: {
-          attributes,
-          priceRange
-        },
-        meta: {
-          totalProducts,
-          hasFilters: attributes.length > 0
-        }
+        filters: { attributes, priceRange },
+        meta: { totalProducts, hasFilters: attributes.length > 0 },
       };
     } catch (error) {
-      console.error('Error in getCategoryFilterData:', error);
+      console.error("Error in getCategoryFilterData:", error);
       throw error;
     }
   }
@@ -398,7 +439,7 @@ export class CategoryFilterService {
    */
   async getMultipleCategoriesFilterData(
     categoryIds: string[],
-    includeProductCounts: boolean = false
+    includeProductCounts: boolean = false,
   ): Promise<{
     filters: {
       attributes: FilterableAttribute[];
@@ -413,10 +454,10 @@ export class CategoryFilterService {
     try {
       // Get ALL category IDs for all provided categories
       const allCategoryIds = new Set<string>();
-      
+
       for (const categoryId of categoryIds) {
         const categoryIdsForThis = await this.getAllCategoryIds(categoryId);
-        categoryIdsForThis.forEach(id => allCategoryIds.add(id));
+        categoryIdsForThis.forEach((id) => allCategoryIds.add(id));
       }
 
       const allCategoryIdsArray = Array.from(allCategoryIds);
@@ -425,13 +466,13 @@ export class CategoryFilterService {
         return {
           filters: {
             attributes: [],
-            priceRange: { min: 0, max: 10000 }
+            priceRange: { min: 0, max: 10000 },
           },
           meta: {
             totalProducts: 0,
             categoriesProcessed: categoryIds.length,
-            hasFilters: false
-          }
+            hasFilters: false,
+          },
         };
       }
 
@@ -439,22 +480,22 @@ export class CategoryFilterService {
       const [attributes, priceRange, totalProducts] = await Promise.all([
         this.getFilterableAttributes(allCategoryIdsArray, includeProductCounts),
         this.getPriceRange(allCategoryIdsArray),
-        this.getProductCount(allCategoryIdsArray)
+        this.getProductCount(allCategoryIdsArray),
       ]);
 
       return {
         filters: {
           attributes,
-          priceRange
+          priceRange,
         },
         meta: {
           totalProducts,
           categoriesProcessed: categoryIds.length,
-          hasFilters: attributes.length > 0
-        }
+          hasFilters: attributes.length > 0,
+        },
       };
     } catch (error) {
-      console.error('Error in getMultipleCategoriesFilterData:', error);
+      console.error("Error in getMultipleCategoriesFilterData:", error);
       throw error;
     }
   }
@@ -462,23 +503,26 @@ export class CategoryFilterService {
   /**
    * Get categories up to a specific level depth
    */
-  private async getCategoriesUpToLevel(categoryId: string, maxLevels: number): Promise<string[]> {
+  private async getCategoriesUpToLevel(
+    categoryId: string,
+    maxLevels: number,
+  ): Promise<string[]> {
     const categories: string[] = [categoryId];
-    
+
     const findCategories = async (parentId: string, currentLevel: number) => {
       if (currentLevel >= maxLevels) return;
-      
+
       const children = await prisma.category.findMany({
         where: { parentId },
-        select: { id: true }
+        select: { id: true },
       });
-      
+
       for (const child of children) {
         categories.push(child.id);
         await findCategories(child.id, currentLevel + 1);
       }
     };
-    
+
     await findCategories(categoryId, 0);
     return categories;
   }
@@ -487,24 +531,27 @@ export class CategoryFilterService {
    * Get filter data for display categories (limited to 3 levels)
    */
   async getDisplayCategoryFilterData(
-    categoryId: string, 
+    categoryId: string,
     maxLevels: number = 3,
-    includeProductCounts: boolean = false
+    includeProductCounts: boolean = false,
   ): Promise<CategoryFilterResponse> {
     try {
       // Verify category exists
       const category = await prisma.category.findUnique({
         where: { id: categoryId },
-        select: { id: true, name: true, slug: true }
+        select: { id: true, name: true, slug: true },
       });
 
       if (!category) {
-        throw new Error('Category not found');
+        throw new Error("Category not found");
       }
 
       // Get categories up to the specified level depth
-      const displayCategoryIds = await this.getCategoriesUpToLevel(categoryId, maxLevels);
-      
+      const displayCategoryIds = await this.getCategoriesUpToLevel(
+        categoryId,
+        maxLevels,
+      );
+
       // Get breadcrumb
       const breadcrumb = await this.getCategoryBreadcrumb(categoryId);
 
@@ -512,7 +559,7 @@ export class CategoryFilterService {
       const [attributes, priceRange, totalProducts] = await Promise.all([
         this.getFilterableAttributes(displayCategoryIds, includeProductCounts),
         this.getPriceRange(displayCategoryIds),
-        this.getProductCount(displayCategoryIds)
+        this.getProductCount(displayCategoryIds),
       ]);
 
       return {
@@ -520,19 +567,19 @@ export class CategoryFilterService {
           id: category.id,
           name: category.name,
           slug: category.slug,
-          breadcrumb
+          breadcrumb,
         },
         filters: {
           attributes,
-          priceRange
+          priceRange,
         },
         meta: {
           totalProducts,
-          hasFilters: attributes.length > 0
-        }
+          hasFilters: attributes.length > 0,
+        },
       };
     } catch (error) {
-      console.error('Error in getDisplayCategoryFilterData:', error);
+      console.error("Error in getDisplayCategoryFilterData:", error);
       throw error;
     }
   }
@@ -541,7 +588,9 @@ export class CategoryFilterService {
    * ULTRA SIMPLIFIED: Get only category-level filter data without product checks
    * This is the fastest version - only returns what's defined at category level
    */
-  async getCategoryLevelFilterData(categoryId: string): Promise<CategoryFilterResponse> {
+  async getCategoryLevelFilterData(
+    categoryId: string,
+  ): Promise<CategoryFilterResponse> {
     return this.getCategoryFilterData(categoryId, false);
   }
 

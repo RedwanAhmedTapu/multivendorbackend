@@ -3,7 +3,7 @@ export const R2_ADMIN_CONFIG = {
   bucket: process.env.R2_BUCKET_NAME!,
   endpoint: process.env.R2_ENDPOINT!,
   publicDomain: process.env.R2_PUBLIC_DOMAIN || null,
-  adminFolder: "admin", // Root folder for all admin assets
+  adminFolder: "admin", 
 };
 
 // Admin-specific upload function (no quota checks)
@@ -89,6 +89,13 @@ export function generateProductImageKey(fileName: string): string {
   const timestamp = Date.now();
   const safeFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, "_");
   return `${R2_ADMIN_CONFIG.adminFolder}/products/${timestamp}-${safeFileName}`;
+}
+
+// Campaign landing page images (hero banner + per-component banners)
+export function generateCampaignImageKey(fileName: string): string {
+  const timestamp = Date.now();
+  const safeFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, "_");
+  return `${R2_ADMIN_CONFIG.adminFolder}/campaigns/${timestamp}-${safeFileName}`;
 }
 
 // User avatars (if needed for admin)

@@ -1,0 +1,9 @@
+node_modules
+.git
+.github
+daraz-session
+daraz_locations*
+*.xlsx
+uploads
+.env
+*.log

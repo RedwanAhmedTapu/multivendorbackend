@@ -35,6 +35,12 @@ const fileFilter = (
  * @param vendorId - Optional vendor ID override
  * @param maxFiles - Maximum number of files for array upload
  */
+
+/**
+ * Create multer upload middleware for vendor storage (image, single or array)
+ *
+ *
+ */
 export const imageUpload = (
   category: string,
   userType: "VENDOR" | "ADMIN",
@@ -44,18 +50,43 @@ export const imageUpload = (
   const upload = multer({
     storage,
     limits: {
-      fileSize: 5 * 1024 * 1024, // 5MB per file
+      fileSize: 5 * 1024 * 1024,
       files: maxFiles,
     },
     fileFilter,
   });
 
-  // Return appropriate multer middleware based on maxFiles
-  if (maxFiles === 1) {
-    return upload.single('file');
-  } else {
-    return upload.array('files', maxFiles);
-  }
+  const multerMiddleware =
+    maxFiles === 1
+      ? upload.single("file")
+      : upload.array("files", maxFiles);
+
+  return (req: any, res: any, next: any) => {
+    multerMiddleware(req, res, (err: any) => {
+      if (err instanceof multer.MulterError) {
+        if (err.code === "LIMIT_FILE_SIZE") {
+          return res.status(400).json({
+            success: false,
+            message: "File size must not exceed 5MB",
+          });
+        }
+
+        return res.status(400).json({
+          success: false,
+          message: err.message,
+        });
+      }
+
+      if (err) {
+        return res.status(400).json({
+          success: false,
+          message: err.message,
+        });
+      }
+
+      next();
+    });
+  };
 };
 
 /**
@@ -94,7 +125,6 @@ export const categoryimageUpload = (
     },
     fileFilter,
   });
-console.log(fieldName,"fieldName");
   // Return appropriate multer middleware based on maxFiles
   if (maxFiles === 1) {
     return upload.single(fieldName); // Use the fieldName parameter

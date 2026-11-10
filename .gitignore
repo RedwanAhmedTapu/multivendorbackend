@@ -3,3 +3,19 @@ node_modules
 .env
 
 /generated/prisma
+
+# Puppeteer/Chrome user-data profile used for Daraz scraping — this
+# contains a live Network/Cookies DB and a saved-password "Login Data"
+# DB. It was previously committed (239 files) to this repo's git
+# history. Never track this again; see the git-history cleanup script
+# in scripts/purge-daraz-session.sh for removing the old commits.
+daraz-session/
+
+# Scraped output artifacts — not source code, regenerable, and no
+# reason to live in git history.
+daraz_locations.csv
+daraz_locations.json
+daraz_locations_*.xlsx
+
+# User-uploaded files — these are runtime data, not source.
+uploads/

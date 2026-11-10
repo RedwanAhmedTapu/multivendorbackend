@@ -1,0 +1,22 @@
+# k8s/service.yaml
+#
+# A ClusterIP Service already load-balances (round-robin by default)
+# across every healthy pod matching the selector — this is the
+# "Kubernetes-native load balancer" for internal traffic. Combine with the
+# ingress below to expose it outside the cluster for free via
+# ingress-nginx (rather than paying for a cloud LoadBalancer Service).
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: multivendor-api-svc
+spec:
+  selector:
+    app: multivendor-api
+  ports:
+    - port: 80
+      targetPort: 5000
+  # Same Socket.IO caveat as the Nginx/Docker Compose setup: without a
+  # shared Socket.IO adapter (Redis adapter — see docker-compose.yml),
+  # sessionAffinity here only fixes the handshake, not cross-pod broadcast.
+  sessionAffinity: ClientIP

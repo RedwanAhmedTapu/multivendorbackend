@@ -3,12 +3,9 @@ import type { Request, Response } from 'express';
 import type { CreateConversationPayload } from '../types/chat.ts';
 import { chatService } from '../services/chat.service.ts';
 import type { ParticipantType } from '@prisma/client';
-// ✅ FIX: use a top-level type import instead of an inline dynamic import
 import type { ChatSocket } from '../socket/chatSocket.ts';
 
-// ── Module-level reference set once by server.ts after ChatSocket is created ──
-// Previously this was always null because server.ts did `new ChatSocket(io)`
-// without capturing the return value, so setChatSocket() was never called.
+// ── Module-level reference ──
 let chatSocketInstance: ChatSocket | null = null;
 
 function toParticipantType(role: string): ParticipantType {
@@ -28,7 +25,6 @@ function toParticipantType(role: string): ParticipantType {
 }
 
 export class ChatController {
-  // ── Called once from server.ts immediately after `new ChatSocket(io)` ────────
   setChatSocket(instance: ChatSocket) {
     chatSocketInstance = instance;
     console.log('✅ ChatSocket instance registered in ChatController');
@@ -62,6 +58,73 @@ export class ChatController {
     }
   }
 
+  async getConversations(req: Request, res: Response) {
+    try {
+      const { page = 1, limit = 20, type } = req.query;
+      const userType = toParticipantType(req.user.role);
+
+      let result;
+      if (type && type !== 'ALL') {
+        result = await chatService.getUserConversationsByType(
+          String(req.user.id),
+          userType,
+          String(type),
+          Number(page),
+          Number(limit)
+        );
+      } else {
+        result = await chatService.getUserConversations(
+          String(req.user.id),
+          userType,
+          Number(page),
+          Number(limit)
+        );
+      }
+
+      res.json(result);
+    } catch (error) {
+      console.error('getConversations error:', error);
+      res.status(500).json({ error: 'Failed to get conversations' });
+    }
+  }
+
+  async searchConversations(req: Request, res: Response) {
+    try {
+      const { q, page = 1, limit = 20 } = req.query;
+      if (!q || typeof q !== 'string') {
+        return res.status(400).json({ error: 'Search query "q" is required' });
+      }
+
+      const userType = toParticipantType(req.user.role);
+      const result = await chatService.searchConversations(
+        String(req.user.id),
+        userType,
+        q,
+        Number(page),
+        Number(limit)
+      );
+
+      res.json(result);
+    } catch (error) {
+      console.error('searchConversations error:', error);
+      res.status(500).json({ error: 'Failed to search conversations' });
+    }
+  }
+
+  async getConversation(req: Request, res: Response) {
+    try {
+      const { conversationId } = req.params;
+      const conversation = await chatService.getConversationById(conversationId);
+      if (!conversation) {
+        return res.status(404).json({ error: 'Conversation not found' });
+      }
+      res.json(conversation);
+    } catch (error) {
+      console.error('getConversation error:', error);
+      res.status(500).json({ error: 'Failed to get conversation' });
+    }
+  }
+
   async sendMessage(req: Request, res: Response) {
     try {
       const { conversationId, content } = req.body;
@@ -79,15 +142,11 @@ export class ChatController {
         content.trim()
       );
 
-      // ✅ FIX: chatSocketInstance is now always set (wired in server.ts),
-      //    so this broadcast fires for every HTTP-sent message and the vendor
-      //    receives the `new_message` socket event in real time.
       if (chatSocketInstance) {
         chatSocketInstance
           .broadcastNewMessage(message, conversationId, String(req.user.id))
           .catch((err) => console.error('broadcastNewMessage failed:', err));
       } else {
-        // This should never happen after the server.ts fix, but log it just in case
         console.warn('⚠️  chatSocketInstance is null — real-time broadcast skipped');
       }
 
@@ -98,49 +157,16 @@ export class ChatController {
     }
   }
 
-  async getConversations(req: Request, res: Response) {
-    try {
-      const { page = 1, limit = 20 } = req.query;
-      const userType = toParticipantType(req.user.role);
-      const data = await chatService.getUserConversations(
-        String(req.user.id),
-        userType,
-        Number(page),
-        Number(limit)
-      );
-      res.json({
-        data,
-        pagination: {
-          page:  Number(page),
-          limit: Number(limit),
-          total: data.length,
-          pages: 1,
-        },
-      });
-    } catch (error) {
-      console.error('getConversations error:', error);
-      res.status(500).json({ error: 'Failed to get conversations' });
-    }
-  }
-
   async getConversationMessages(req: Request, res: Response) {
     try {
       const { conversationId } = req.params;
       const { page = 1, limit = 50 } = req.query;
-      const data = await chatService.getConversationMessages(
+      const result = await chatService.getConversationMessages(
         conversationId,
         Number(page),
         Number(limit)
       );
-      res.json({
-        data,
-        pagination: {
-          page:  Number(page),
-          limit: Number(limit),
-          total: data.length,
-          pages: 1,
-        },
-      });
+      res.json(result);
     } catch (error) {
       console.error('getConversationMessages error:', error);
       res.status(500).json({ error: 'Failed to get messages' });
@@ -151,28 +177,84 @@ export class ChatController {
     try {
       const { conversationId } = req.params;
       const userType = toParticipantType(req.user.role);
-      await chatService.markAsRead(
+      const result = await chatService.markAsRead(
         conversationId,
         String(req.user.id),
         userType
       );
-      res.json({ message: 'Messages marked as read' });
+
+      if (chatSocketInstance) {
+        chatSocketInstance
+          .broadcastReadStatus(conversationId, String(req.user.id), userType)
+          .catch((err) => console.error('broadcastReadStatus failed:', err));
+      }
+
+      res.json(result);
     } catch (error) {
       console.error('markAsRead error:', error);
       res.status(500).json({ error: 'Failed to mark as read' });
     }
   }
 
-  async getConversation(req: Request, res: Response) {
+  async getUnreadCount(req: Request, res: Response) {
+    try {
+      const userType = toParticipantType(req.user.role);
+      const result = await chatService.getUnreadCount(
+        String(req.user.id),
+        userType
+      );
+      res.json(result);
+    } catch (error) {
+      console.error('getUnreadCount error:', error);
+      res.status(500).json({ error: 'Failed to get unread count' });
+    }
+  }
+
+  async muteConversation(req: Request, res: Response) {
     try {
       const { conversationId } = req.params;
-      const conversation = await chatService.getConversationById(conversationId);
-      if (!conversation)
-        return res.status(404).json({ error: 'Conversation not found' });
+      const userType = toParticipantType(req.user.role);
+      const conversation = await chatService.muteConversation(
+        conversationId,
+        String(req.user.id),
+        userType
+      );
       res.json(conversation);
     } catch (error) {
-      console.error('getConversation error:', error);
-      res.status(500).json({ error: 'Failed to get conversation' });
+      console.error('muteConversation error:', error);
+      res.status(500).json({ error: 'Failed to mute conversation' });
+    }
+  }
+
+  async unmuteConversation(req: Request, res: Response) {
+    try {
+      const { conversationId } = req.params;
+      const userType = toParticipantType(req.user.role);
+      const conversation = await chatService.unmuteConversation(
+        conversationId,
+        String(req.user.id),
+        userType
+      );
+      res.json(conversation);
+    } catch (error) {
+      console.error('unmuteConversation error:', error);
+      res.status(500).json({ error: 'Failed to unmute conversation' });
+    }
+  }
+
+  async leaveConversation(req: Request, res: Response) {
+    try {
+      const { conversationId } = req.params;
+      const userType = toParticipantType(req.user.role);
+      const result = await chatService.leaveConversation(
+        conversationId,
+        String(req.user.id),
+        userType
+      );
+      res.json(result);
+    } catch (error) {
+      console.error('leaveConversation error:', error);
+      res.status(500).json({ error: 'Failed to leave conversation' });
     }
   }
 }

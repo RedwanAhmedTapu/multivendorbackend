@@ -29,7 +29,12 @@ router.delete(
   authorizeRoles("VENDOR"),
   vendorStorageController.deleteFile
 );
-
+// routes/vendor-storage.routes.ts — add
+router.get(
+  "/r2/product-images",
+  authorizeRoles("VENDOR"),
+  vendorStorageController.getProductImagesFromR2
+);
 router.get(
   "/stats",
   authorizeRoles("VENDOR"),

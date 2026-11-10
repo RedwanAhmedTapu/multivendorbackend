@@ -1,0 +1,292 @@
+// PROPOSED ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â NOT APPLIED. Add to prisma/schema.prisma together with the migration.
+// Email & SMS campaigns ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â revision 4 (approved corrections applied).
+//
+// INTEGRATION NOTE: the User model needs one back-relation when this is adopted:
+//   model User { ... emailSmsRecipients EmailSmsCampaignRecipient[] }
+// Nothing else in the existing schema changes.
+
+enum EmailSmsChannel {
+  EMAIL
+  SMS
+}
+
+enum EmailSmsCampaignType {
+  WELCOME
+  PROMOTIONAL
+  TRANSACTIONAL
+  REMINDER
+}
+
+enum EmailSmsCampaignStatus {
+  DRAFT
+  SCHEDULED
+  SENDING
+  SUBMITTED
+  COMPLETED
+  CANCELLED
+  FAILED
+}
+
+/// How a campaign selects its audience. Deliberately separate from
+/// EmailSmsRecipientSource: audience kind is a campaign property, source is a row's
+/// provenance. CUSTOM exists in the enum but stays unused in v1.
+enum EmailSmsAudienceKind {
+  USER
+  SEGMENT
+  CUSTOM
+}
+
+enum EmailSmsRecipientSource {
+  USER
+  SEGMENT
+  CUSTOM
+}
+
+/// QUEUED     row exists, no provider call yet
+/// SUBMITTED  provider accepted the message (acknowledgement only)
+/// DELIVERED  provider delivery receipt received ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â unreachable until receipts exist
+/// BOUNCED    provider reported a bounce
+/// FAILED     gave up; errorCode says why
+enum EmailSmsSendState {
+  QUEUED
+  SUBMITTED
+  RECONCILIATION_REQUIRED
+  DELIVERED
+  BOUNCED
+  FAILED
+}
+
+enum EmailSmsSuppressionReason {
+  UNSUBSCRIBE
+  HARD_BOUNCE
+  COMPLAINT
+  MANUAL
+}
+
+/// How a suppression was learned; PROVIDER_EVENT requires a real provider callback.
+enum EmailSmsSuppressionSource {
+  ADMIN
+  USER_REQUEST
+  PROVIDER_EVENT
+}
+
+enum EmailSmsActivityKind {
+  CREATED
+  SCHEDULED
+  STARTED
+  SUBMITTED
+  COMPLETED
+  CANCELLED
+  FAILED
+}
+
+/// Soft-deleted rather than removed; campaigns reference it with RESTRICT so a
+/// template can never silently vanish from history.
+model EmailSmsCampaignTemplate {
+  id          String           @id @default(cuid())
+  name        String
+  channel     EmailSmsChannel
+  subject     String?
+  body        String
+  createdById String?
+  deletedAt   DateTime?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  campaigns EmailSmsCampaign[]
+
+  @@index([channel, deletedAt])
+  @@map("email_sms_campaign_templates")
+}
+
+model EmailSmsCampaign {
+  id       String                  @id @default(cuid())
+  name     String
+  channel  EmailSmsChannel
+  type     EmailSmsCampaignType    @default(PROMOTIONAL)
+  status   EmailSmsCampaignStatus  @default(DRAFT)
+
+  templateId           String?
+  /// Immutable copy of what was sent; later template edits cannot rewrite history.
+  subjectSnapshot      String?
+  bodySnapshot         String
+  templateNameSnapshot String?
+
+  audienceKind EmailSmsAudienceKind @default(USER)
+  scheduledAt  DateTime?
+  startedAt    DateTime?
+  finishedAt   DateTime?
+
+  /// Caller-supplied; a retried create cannot duplicate a campaign.
+  idempotencyKey String  @unique
+  /// Fencing token: every send/state write must match this, so a worker whose
+  /// lease expired cannot overwrite the worker that replaced it.
+  claimToken     String?
+  claimedAt      DateTime?
+  createdById    String?
+
+  /// Soft delete only. Hard-deleting a campaign cascades recipients and sends away.
+  deletedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  template   EmailSmsCampaignTemplate? @relation(fields: [templateId], references: [id], onDelete: Restrict)
+  recipients EmailSmsCampaignRecipient[]
+  sends      EmailSmsCampaignSend[]
+  activity   EmailSmsCampaignActivity[]
+
+  @@index([status, scheduledAt])
+  @@index([channel, createdAt])
+  @@index([claimToken])
+  @@index([deletedAt])
+  @@map("email_sms_campaigns")
+}
+
+/// addressHash = sha256(normalised address) for de-duplication only.
+/// addressCipher = "v1:<b64 iv>:<b64 tag>:<b64 ciphertext>" (AES-256-GCM, 12-byte
+/// IV per row, key from CAMPAIGN_ADDRESS_KEY). Plaintext is never stored or logged.
+model EmailSmsCampaignRecipient {
+  id            String                @id @default(cuid())
+  campaignId    String
+  source        EmailSmsRecipientSource
+  /// SET NULL on user deletion: the send history survives, the account does not.
+  userId        String?
+  addressHash   String
+  addressCipher String
+  suppressed    Boolean               @default(false)
+  createdAt     DateTime              @default(now())
+
+  campaign EmailSmsCampaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  user     User?                @relation(fields: [userId], references: [id], onDelete: SetNull)
+  sends    EmailSmsCampaignSend[]
+
+  @@unique([campaignId, addressHash])
+  @@index([campaignId, suppressed])
+  @@index([userId])
+  @@map("email_sms_campaign_recipients")
+}
+
+/// One row per attempt. Retries append a new attempt row; (recipientId, attempt) is
+/// unique so the same attempt cannot be recorded twice.
+model EmailSmsCampaignSend {
+  id                String            @id @default(cuid())
+  campaignId        String
+  recipientId       String
+  attempt           Int               @default(1)
+  state             EmailSmsSendState @default(QUEUED)
+  provider          String?
+  providerMessageId String?           @unique
+  errorCode         String?
+  /// Redacted and truncated before persistence ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â provider text may contain PII.
+  errorMessage      String?
+  submittedAt       DateTime?
+  /// Written immediately BEFORE the provider call. NULL = no transmission attempted,
+  /// which is the only retryable condition after a crash.
+  transmitStartedAt DateTime?
+  /// Only set from a provider delivery receipt, never from submission success.
+  deliveredAt       DateTime?
+  /// Manual resolution of an ambiguous outcome (ADMIN only, provider evidence required).
+  resolutionNote    String?
+  resolvedById      String?
+  resolvedAt        DateTime?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  campaign  EmailSmsCampaign          @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  recipient EmailSmsCampaignRecipient @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@unique([recipientId, attempt])
+  @@index([campaignId, state])
+  @@map("email_sms_campaign_sends")
+}
+
+model EmailSmsCampaignActivity {
+  id         String              @id @default(cuid())
+  campaignId String
+  kind       EmailSmsActivityKind
+  message    String
+  actorId    String?
+  createdAt  DateTime            @default(now())
+
+  /// RESTRICT: the audit trail must outlive the campaign record.
+  campaign EmailSmsCampaign @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+
+  @@index([campaignId, createdAt])
+  @@map("email_sms_campaign_activity")
+}
+
+/// Keyed HMAC of the normalised address (CAMPAIGN_ADDRESS_HASH_KEY, separate from
+/// CAMPAIGN_ADDRESS_KEY). No plaintext address is ever stored here.
+model EmailSmsSuppression {
+  id          String                       @id @default(cuid())
+  addressHash String
+  channel     EmailSmsChannel
+  reason      EmailSmsSuppressionReason
+  source      EmailSmsSuppressionSource
+  createdById String?
+  createdAt   DateTime                     @default(now())
+
+  events EmailSmsSuppressionEvent[]
+
+  @@unique([channel, addressHash])
+  @@index([addressHash])
+  @@map("email_sms_suppressions")
+}
+
+/// Append-only audit. Duplicate provider events are deduplicated by the partial
+/// unique index below (SQL-managed Ã¢â‚¬â€ Prisma cannot express a partial index), so a
+/// repeat delivery is counted in metrics and logged, never stored twice.
+model EmailSmsSuppressionEvent {
+  id              String                   @id @default(cuid())
+  suppressionId   String?
+  addressHash     String
+  channel         EmailSmsChannel
+  reason          EmailSmsSuppressionReason
+  source          EmailSmsSuppressionSource
+  providerEventId String?
+  actorId         String?
+  createdAt       DateTime                 @default(now())
+
+  suppression EmailSmsSuppression? @relation(fields: [suppressionId], references: [id], onDelete: SetNull)
+
+  @@index([addressHash, createdAt])
+  @@map("email_sms_suppression_events")
+}
+
+/// Rotation state for the suppression HMAC key. A version becomes usable only when
+/// it is COMPLETE *and* an independent verifier has written verifiedAt/verifiedById â€”
+/// a worker cannot promote its own version.
+enum EmailSmsHashVersionState {
+  PENDING
+  BACKFILLING
+  COMPLETE
+  RETIRED
+}
+
+model EmailSmsHashVersion {
+  version           Int                     @id
+  state             EmailSmsHashVersionState @default(PENDING)
+  /// True for the single version used to hash NEW rows.
+  isWriteVersion    Boolean                 @default(false)
+  /// True while lookups must consult this version (COMPLETE or RETIRED).
+  lookupEnabled     Boolean                 @default(false)
+  keyAlias          String
+  startedAt         DateTime?
+  backfillStartedAt DateTime?
+  /// Rows created before this instant are the backfill population; later rows are
+  /// dual-written at insert time, so completeness is measured against a boundary.
+  backfilledBefore  DateTime?
+  lastProcessedId   String?
+  attempts          Int                     @default(0)
+  lastError         String?
+  verifiedAt        DateTime?
+  verifiedById      String?
+  verificationRunId String?
+  notes             String?
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+
+  @@index([state])
+  @@map("email_sms_hash_versions")
+}

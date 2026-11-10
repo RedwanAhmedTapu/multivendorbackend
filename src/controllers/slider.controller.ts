@@ -50,7 +50,8 @@ export class SliderController {
 
   async findAll(req: Request, res: Response) {
     try {
-      const sliders = await sliderService.findAll();
+      const { type, vendorId } = req.query as { type?: "HOMEPAGE" | "VENDORPAGE"; vendorId?: string };
+      const sliders = await sliderService.findAll({ type, vendorId });
       res.json(sliders);
     } catch (error: any) {
       res.status(500).json({ error: error.message });

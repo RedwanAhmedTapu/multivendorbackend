@@ -5,47 +5,63 @@ export const CategoryService = {
    * Get all categories with unlimited nested layers
    * Attributes (unified) are included only at leaf categories
    */
-  async getAll() {
-    const categories = await prisma.category.findMany({
-      where: { parentId: null },
-    });
+ async getAll() {
+  // 1. Fetch ALL categories in a single query
+  const allCategories = await prisma.category.findMany({
+    orderBy: { createdAt: 'asc' },
+  });
 
-    const buildHierarchy = async (category: any): Promise<any> => {
-      const children = await prisma.category.findMany({
-        where: { parentId: category.id },
-      });
+  // 2. Fetch ALL category-attribute links in a single query
+  const allAttributes = await prisma.categoryAttribute.findMany({
+    where: {
+      categoryId: { in: allCategories.map(c => c.id) },
+    },
+    include: {
+      attribute: { include: { values: true } },
+    },
+    orderBy: { sortOrder: 'asc' },
+  });
 
-      let transformedCategory: any = { ...category, children: [] };
+  // Group attributes by categoryId
+  const attributesByCategoryId = new Map<string, typeof allAttributes>();
+  for (const attr of allAttributes) {
+    if (!attributesByCategoryId.has(attr.categoryId)) {
+      attributesByCategoryId.set(attr.categoryId, []);
+    }
+    attributesByCategoryId.get(attr.categoryId)!.push(attr);
+  }
 
-      if (children.length > 0) {
-        // Not leaf - has children
-        transformedCategory.children = await Promise.all(children.map(buildHierarchy));
-      } else {
-        // Leaf category: include unified attributes with their values
-        const attributes = await prisma.categoryAttribute.findMany({
-          where: { categoryId: category.id },
-          include: { 
-            attribute: { 
-              include: { values: true } 
-            } 
-          },
-          orderBy: { sortOrder: 'asc' }, // ✅ NEW: Order by sortOrder
-        });
+  // Build lookup map
+  const categoryMap = new Map(allCategories.map(c => [c.id, { ...c, children: [] as any[], attributes: [] as any[] }]));
 
-        transformedCategory.attributes = attributes.map(a => ({
-          ...a.attribute,
-          categoryAttributeId: a.id,
-          isRequired: a.isRequired,
-          filterable: a.filterable,
-          sortOrder: a.sortOrder, // ✅ NEW
-        }));
-      }
+  const roots: any[] = [];
 
-      return transformedCategory;
-    };
+  // Link children (single pass)
+  for (const cat of allCategories) {
+    const node = categoryMap.get(cat.id)!;
+    if (cat.parentId && categoryMap.has(cat.parentId)) {
+      categoryMap.get(cat.parentId)!.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
 
-    return await Promise.all(categories.map(buildHierarchy));
-  },
+  // Attach attributes to leaf nodes only
+  for (const [catId, attrs] of attributesByCategoryId) {
+    const node = categoryMap.get(catId);
+    if (node && node.children.length === 0) {
+      node.attributes = attrs.map(a => ({
+        ...a.attribute,
+        categoryAttributeId: a.id,
+        isRequired: a.isRequired,
+        filterable: a.filterable,
+        sortOrder: a.sortOrder,
+      }));
+    }
+  }
+
+  return roots;
+},
 
   /**
    * Get a category by ID with unlimited nested layers
@@ -241,4 +257,43 @@ export const CategoryService = {
       },
     });
   },
+  async createCatalogRequest(data: any) {
+  return prisma.catalogRequest.create({
+    data: {
+      vendorId: data.vendorId,
+      requestType: data.requestType,
+      categoryId: data.categoryId || null,
+      attributeId: data.attributeId || null,
+      requestedName: data.requestedName,
+      requestedType: data.requestedType || null,
+      description: data.description || null,
+    },
+  });
+},
+
+async getVendorCatalogRequests(vendorId: string) {
+  return prisma.catalogRequest.findMany({
+    where: { vendorId },
+    include: {
+      category: true,
+      attribute: true,
+    },
+    orderBy: {
+      createdAt: "desc",
+    },
+  });
+},
+
+async getAllCatalogRequests() {
+  return prisma.catalogRequest.findMany({
+    include: {
+      vendor: true,
+      category: true,
+      attribute: true,
+    },
+    orderBy: {
+      createdAt: "desc",
+    },
+  });
+},
 };

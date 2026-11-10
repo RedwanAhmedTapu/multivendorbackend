@@ -15,7 +15,7 @@ export const TemplateController = {
       };
 
       // Generate workbook buffer
-      const buffer = CategoryTemplateGenerator.generateWorkbookBuffer(options);
+      const buffer = await CategoryTemplateGenerator.generateWorkbookBuffer(options);
       
       // Set headers for file download
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -54,7 +54,7 @@ export const TemplateController = {
       }
 
       // Generate workbook buffer
-      const buffer = CategoryTemplateGenerator.generateWorkbookBuffer(options);
+      const buffer = await CategoryTemplateGenerator.generateWorkbookBuffer(options);
       
       // Set headers for file download
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');

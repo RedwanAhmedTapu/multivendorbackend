@@ -29,6 +29,9 @@ export const validate =
         });
       }
 
+      // Surface the real error for non-Zod failures (schema-construction
+      // bugs, dual zod instances, …) instead of swallowing it silently.
+      console.error("[validate] non-Zod error:", err);
       return res.status(500).json({
         success: false,
         message: "Internal server error during validation",

@@ -51,8 +51,15 @@ export class CategoryFilterController {
 
       const { id } = req.params;
 
-      // Get filter data
-      const filterData = await categoryFilterService.getCategoryFilterData(id);
+      // ✅ FIX: আগে `includeProductCounts` পাঠানো হতো না, তাই এটা
+      // service-এর default (false) নিয়ে "simple mode"-এ চলে যেত।
+      // simple mode-এ getFilterableAttributes() প্রতিটা SELECT attribute-এর
+      // *সব সংজ্ঞায়িত* AttributeValue দেখাতো (Attribute.values থেকে সরাসরি),
+      // কোনো actual product-এ সেটা attach আছে কিনা যাচাই না করেই। ফলে sidebar
+      // এমন value-ও দেখাতো যেটা কোনো প্রোডাক্টেই ব্যবহৃত হয়নি — সেই value
+      // দিয়ে ফিল্টার করলে তাই সবসময় zero result আসত। এখন সবসময় product
+      // count সহ (accurate mode) কল করা হচ্ছে।
+      const filterData = await categoryFilterService.getCategoryFilterData(id, true);
 
       const response: ApiSuccessResponse<CategoryFilterResponse> = {
         success: true,
@@ -111,7 +118,6 @@ export class CategoryFilterController {
       }
 
       const { slug } = req.params;
-      console.log(slug,"null")
 
       // First, find the category by slug
       const category = await prisma.category.findUnique({
@@ -128,8 +134,10 @@ export class CategoryFilterController {
         return;
       }
 
-      // Get filter data using category ID
-      const filterData = await categoryFilterService.getCategoryFilterData(category.id);
+      // ✅ FIX: same as above — always request accurate (product-count-aware)
+      // filter data, otherwise the sidebar shows attribute values that have
+      // zero products attached, which breaks filtering ("no products found").
+      const filterData = await categoryFilterService.getCategoryFilterData(category.id, true);
 
       const response: ApiSuccessResponse<CategoryFilterResponse> = {
         success: true,
@@ -210,9 +218,11 @@ export class CategoryFilterController {
         return;
       }
 
-      // Get combined filter data
+      // ✅ FIX: pass includeProductCounts = true so returned attribute
+      // values are guaranteed to have at least one matching product.
       const filterData = await categoryFilterService.getMultipleCategoriesFilterData(
-        categoryIdsArray
+        categoryIdsArray,
+        true
       );
 
       const response: ApiSuccessResponse<typeof filterData> = {
@@ -246,14 +256,22 @@ export class CategoryFilterController {
     try {
       const { id } = req.params;
 
-      const filterData = await categoryFilterService.getCategoryFilterData(id);
+      // ✅ FIX (consistency): also request accurate mode here.
+      const filterData = await categoryFilterService.getCategoryFilterData(id, true);
 
+      // ⚠️ NOTE: `filterData.filters` currently only has `attributes` and
+      // `priceRange` (see CategoryFilterResponse in categoryFilterService.ts).
+      // There is no `specifications` field, so the old code below would
+      // throw at runtime ("Cannot read properties of undefined").
+      // Fixed to only reference fields that actually exist. If you later
+      // add a separate `specifications` array to the service, restore the
+      // specification-related lines here and add it back to the type.
       const summary = {
         attributeCount: filterData.filters.attributes.length,
-        specificationCount: filterData.filters.specifications.length,
-        totalFilterOptions: 
-          filterData.filters.attributes.reduce((sum, attr) => sum + attr.values.length, 0) +
-          filterData.filters.specifications.reduce((sum, spec) => sum + spec.values.length, 0),
+        totalFilterOptions: filterData.filters.attributes.reduce(
+          (sum, attr) => sum + attr.values.length,
+          0
+        ),
         priceRange: filterData.filters.priceRange,
         totalProducts: filterData.meta.totalProducts,
         hasFilters: filterData.meta.hasFilters
@@ -361,9 +379,11 @@ export class CategoryFilterController {
 
       const categoryIds = categories.map(cat => cat.id);
 
-      // Get combined filter data
+      // ✅ FIX: pass includeProductCounts = true so returned attribute
+      // values are guaranteed to have at least one matching product.
       const filterData = await categoryFilterService.getMultipleCategoriesFilterData(
-        categoryIds
+        categoryIds,
+        true
       );
 
       const response: ApiSuccessResponse<typeof filterData> = {

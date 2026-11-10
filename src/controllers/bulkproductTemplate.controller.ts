@@ -46,6 +46,12 @@ export class TemplateController {
     }
   }
 
+  /**
+   * ONE-CLICK download — generates the template fresh, streams it straight
+   * to the client, and the file is already gone from disk by the time this
+   * even starts sending (see TemplateService.generateTemplateBuffer). No
+   * separate "generate first, then download" step needed anymore.
+   */
   async downloadTemplate(req: Request, res: Response) {
     try {
       const { categoryId } = req.params;
@@ -54,7 +60,6 @@ export class TemplateController {
         return res.status(400).json({ message: 'Category ID is required' });
       }
 
-      // Validate category exists and is a leaf category
       const category = await prisma.category.findUnique({
         where: { id: categoryId },
         include: { children: true },
@@ -65,59 +70,36 @@ export class TemplateController {
       }
 
       if (category.children && category.children.length > 0) {
-        return res.status(400).json({ 
-          message: 'Cannot download template for parent category. Please select a leaf category (one without sub-categories).' 
+        return res.status(400).json({
+          message: 'Cannot download template for parent category. Please select a leaf category (one without sub-categories).',
         });
       }
 
-      // Find the template for this category
-      const template = await prisma.categoryTemplate.findUnique({
-        where: { categoryId },
-      });
+      const { buffer, fileName } = await this.templateService.generateTemplateBuffer(categoryId);
 
-      if (!template || !template.filePath) {
-        return res.status(404).json({ 
-          message: 'Template not found. Please generate the template first.' 
-        });
-      }
-
-      // Check if file exists on disk
-      try {
-        await fs.access(template.filePath);
-      } catch {
-        return res.status(404).json({ 
-          message: 'Template file not found on server. Please regenerate the template.' 
-        });
-      }
-
-      // Get file name from path
-      const fileName = path.basename(template.filePath);
-
-      // Set response headers for file download
       res.setHeader(
         'Content-Type',
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
       );
-      res.setHeader(
-        'Content-Disposition',
-        `attachment; filename="${fileName}"`
-      );
-      res.setHeader(
-        'Cache-Control',
-        'no-cache, no-store, must-revalidate'
-      );
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       res.setHeader('Pragma', 'no-cache');
       res.setHeader('Expires', '0');
 
-      // Read and send the file
-      const fileBuffer = await fs.readFile(template.filePath);
-      res.send(fileBuffer);
-      
+      res.send(buffer);
     } catch (error: any) {
       console.error('Error in downloadTemplate:', error);
-      res.status(500).json({ 
-        message: 'Error downloading template', 
-        error: error.message 
+
+      if (error.message?.includes('not found')) {
+        return res.status(404).json({ message: error.message });
+      }
+      if (error.message?.includes('not a leaf category')) {
+        return res.status(400).json({ message: error.message });
+      }
+
+      res.status(500).json({
+        message: 'Error downloading template',
+        error: error.message,
       });
     } finally {
       await prisma.$disconnect();

@@ -1,0 +1,28 @@
+# k8s/ingress.yaml
+#
+# Free external entrypoint via ingress-nginx (k3s ships a Traefik ingress
+# by default instead — either works, this file targets ingress-nginx since
+# it's the most common one to install manually on MicroK8s / vanilla k8s):
+#   microk8s enable ingress
+# or for k3s, just use the built-in Traefik equivalent instead of this file.
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: multivendor-api-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "55m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: api.yourdomain.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: multivendor-api-svc
+                port:
+                  number: 80

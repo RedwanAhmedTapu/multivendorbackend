@@ -2,6 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import ExcelJS from "exceljs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
+import { existsSync, mkdirSync, promises as fs } from "fs";
 
 export interface ColumnConfig {
   header: string;
@@ -81,6 +82,18 @@ export class TemplateService {
 
     try {
       const category = await this.getCategoryTemplateData(categoryId);
+
+      // Regenerating a template for a category that already had one would
+      // otherwise leave the old file orphaned on disk forever (each file
+      // name is timestamped, so upserting the DB record alone doesn't
+      // remove the previous physical file). Clean it up first.
+      const existingRecord = await prisma.categoryTemplate.findUnique({ where: { categoryId } });
+      if (existingRecord?.filePath) {
+        await fs.unlink(existingRecord.filePath).catch(() => {
+          // File may already be gone (e.g. cleaned up after a previous download) — safe to ignore.
+        });
+      }
+
       const workbook = new ExcelJS.Workbook();
       workbook.creator = "System";
       workbook.created = new Date();
@@ -91,6 +104,10 @@ export class TemplateService {
       // NOTE: Stock quantities are NOT included here. Inventory (WarehouseStock)
       // is managed through the Purchase Order flow, not bulk product upload.
       // reorderLevel IS included as it's a static threshold, not a live count.
+      //
+      // "Brand ID" was added here — ProductCoreService.create() accepts
+      // input.brandId and it was missing from the original template even
+      // though the create flow supports it.
       const basicInfoColumns: ColumnConfig[] = [
         {
           header: "Variant Group No",
@@ -129,12 +146,27 @@ export class TemplateService {
           description:
             "Detailed product description. Same for all variants in a group.",
         },
+        {
+          header: "Brand ID",
+          key: "brandId",
+          width: 26,
+          type: "TEXT",
+          isRequired: false,
+          description:
+            "The system Brand ID for this product (same for all variants in a group). " +
+            "Leave blank if the product has no brand association.",
+        },
       ];
 
       // ─── SECTION 2: Variant-level fields ─────────────────────────────────
       // price / specialPrice / availability / reorderLevel live on ProductVariant.
       // Stock (WarehouseStock.quantity) is intentionally excluded — it is
       // populated when a PurchaseOrder is received, not during product creation.
+      //
+      // "Tax Rate" was added here — ProductCoreService.create() reads
+      // input.taxRate and applies it to every variant, but the original
+      // template had no column feeding that field (it silently defaulted
+      // to undefined/0 with no way for the vendor to set it).
       const variantCoreColumns: ColumnConfig[] = [
         {
           header: "SKU",
@@ -162,7 +194,10 @@ export class TemplateService {
           type: "NUMBER",
           isRequired: true,
           description:
-            "Regular selling price of this variant. Must be > 0 and greater than Special Price if provided.",
+            "Regular selling price of this variant. Must be > 0 and greater than Special Price if provided. " +
+            "NOTE: products are created first with price 0 (same as manual creation), then this price is " +
+            "applied to the variant as a second step by the bulk importer — matching the vendor's " +
+            "PATCH .../variants/:id/price flow.",
         },
         {
           header: "Special Price",
@@ -173,6 +208,16 @@ export class TemplateService {
           description:
             "Discounted price. Must be between 20 % and 100 % of Price (max 80 % discount). " +
             "Leave blank if no discount applies.",
+        },
+        {
+          header: "Tax Rate",
+          key: "taxRate",
+          width: 16,
+          type: "NUMBER",
+          isRequired: false,
+          description:
+            "Tax rate percentage applied to this product's variants (e.g. 5 for 5%). Defaults to 0 if left blank. " +
+            "Same value is used for every variant row in a group.",
         },
         {
           header: "Reorder Level",
@@ -477,10 +522,12 @@ export class TemplateService {
         name: "Example Standalone Product",
         nameBn: "উদাহরণ পণ্য",
         description: "A product with no variants. Leave Variant Group No blank.",
+        brandId: "",
         sku: "SKU-STANDALONE-001",
         availability: "true",
         price: 1200,
         specialPrice: 960,    // 20% off
+        taxRate: 5,
         reorderLevel: 10,
         imageUrls: "https://example.com/product.jpg",
         packageWeight: 1.5,
@@ -501,10 +548,12 @@ export class TemplateService {
         name: "Example Product With Variants",
         nameBn: "ভেরিয়েন্ট পণ্য",
         description: "Rows 3–4 share Variant Group No 1 — they become variants of one product.",
+        brandId: "",
         sku: "SKU-EXAMPLE-RED-M",
         availability: "true",
         price: 850,
         specialPrice: "",
+        taxRate: 5,
         reorderLevel: 5,
         imageUrls: "https://example.com/red-m.jpg",
         packageWeight: 0.8,
@@ -525,10 +574,12 @@ export class TemplateService {
         name: "Example Product With Variants",
         nameBn: "ভেরিয়েন্ট পণ্য",
         description: "Rows 3–4 share Variant Group No 1 — they become variants of one product.",
+        brandId: "",
         sku: "SKU-EXAMPLE-BLUE-L",
         availability: "true",
         price: 900,
         specialPrice: 720,    // 20% off
+        taxRate: 5,
         reorderLevel: 5,
         imageUrls: "https://example.com/blue-l.jpg",
         packageWeight: 0.9,
@@ -634,6 +685,13 @@ export class TemplateService {
             "WarehouseStock is created automatically when a PO is received.",
         ],
         [
+          "Price Is Applied As A Second Step",
+          "Behind the scenes, each product is first created with variant price 0 (same as manual product creation), " +
+            "then the Price / Special Price / Reorder Level from this sheet are applied to each variant automatically " +
+            "by the bulk import — you don't need to do anything extra, but if a product import fails partway, the " +
+            "product itself may exist while price application failed; check the import result per row.",
+        ],
+        [
           "Reorder Level",
           "This is a static threshold (default 10). When warehouse stock drops below this level, a low-stock alert fires. " +
             "It does NOT set initial stock.",
@@ -651,6 +709,14 @@ export class TemplateService {
         [
           "Product Attributes (📦)",
           "Non-variant attributes describe the overall product. Use the SAME value for all rows in the same group.",
+        ],
+        [
+          "Brand ID",
+          "Optional. Must be a valid Brand ID already in the system. Leave blank if the product has no brand.",
+        ],
+        [
+          "Tax Rate",
+          "Optional percentage applied to every variant in the group (e.g. 5 = 5%). Defaults to 0 if left blank.",
         ],
         [
           "Pricing Rules",
@@ -671,10 +737,9 @@ export class TemplateService {
       });
 
       // ─── Save file ────────────────────────────────────────────────────────
-      const fs = await import("fs");
       const templatesDir = join(__dirname, "..", "templates");
-      if (!fs.existsSync(templatesDir)) {
-        fs.mkdirSync(templatesDir, { recursive: true });
+      if (!existsSync(templatesDir)) {
+        mkdirSync(templatesDir, { recursive: true });
       }
 
       const safeCategory = category.name.replace(/[^a-zA-Z0-9]/g, "_");
@@ -695,6 +760,53 @@ export class TemplateService {
     } finally {
       await prisma.$disconnect();
     }
+  }
+
+  /**
+   * Deletes the generated template's physical file (and its DB record) for
+   * a category. Intended to be called right after the file has been served
+   * to the vendor for download — templates are meant to be downloaded once
+   * and regenerated on demand, not kept around indefinitely on disk.
+   * Safe to call even if the file/record is already gone.
+   */
+  async deleteTemplateFile(categoryId: string): Promise<void> {
+    try {
+      const template = await prisma.categoryTemplate.findUnique({ where: { categoryId } });
+      if (!template) return;
+
+      await fs.unlink(template.filePath).catch(() => {
+        // Already removed from disk — fine, we still clean up the DB record below.
+      });
+
+      await prisma.categoryTemplate.delete({ where: { categoryId } }).catch(() => {
+        // Already removed (e.g. a concurrent request cleaned it up first) — fine.
+      });
+    } catch (error) {
+      // Cleanup is best-effort and must never fail the download response that triggered it.
+      console.error(`Failed to clean up template file for category ${categoryId}:`, error);
+    }
+  }
+
+  /**
+   * UNIFIED one-click flow: generates the template, reads it into memory,
+   * and deletes the physical file + DB record immediately — all before
+   * returning. The caller (controller) just streams the returned buffer.
+   * No separate "generate" step, no leftover file waiting to be downloaded,
+   * nothing to clean up afterwards. This is what the vendor-facing
+   * "download template" button should call.
+   */
+  async generateTemplateBuffer(categoryId: string): Promise<{ buffer: Buffer; fileName: string }> {
+    const { filePath } = await this.generateExcelTemplate(categoryId);
+    const fileName = filePath.split(/[\\/]/).pop()!;
+
+    const buffer = await fs.readFile(filePath);
+
+    // Clean up right away — we already have the bytes we need in memory,
+    // so there's no reason for the file to sit on disk even momentarily
+    // longer than it takes to read it.
+    await this.deleteTemplateFile(categoryId);
+
+    return { buffer, fileName };
   }
 
   /** Convert 0-based column index to Excel letter(s): 0→A, 25→Z, 26→AA */

@@ -1,0 +1,220 @@
+// Schema state after 20261022210000_pos_subscription_lifecycle (already in prisma/schema.prisma).
+// Vendor also gains: posTrialGrant PosTrialGrant?, posSubscriptionPayments PosSubscriptionPayment[]
+
+model PosSubscription {
+  id              String                   @id @default(cuid())
+  vendorId        String                   @unique
+  plan            PosSubscriptionPlan      @default(TRIAL)
+  status          PosSubStatus             @default(ACTIVE)
+  startedAt       DateTime                 @default(now())
+  /// Authoritative end of access (null only for open-ended COMPLIMENTARY/LEGACY access).
+  expiresAt       DateTime?
+  autoRenew       Boolean                  @default(false)
+  /// Deprecated (Float). Prices live on PosPlan / PosSubscriptionPayment (Decimal).
+  price           Float?
+  billingCycle    BillingCycle?
+  lastPaymentAt   DateTime?
+  /// What the current access is based on. Rows that existed before the
+  /// lifecycle feature are LEGACY until an admin decides otherwise.
+  source          PosSubscriptionSource    @default(LEGACY)
+  planId          String?
+  suspendedAt     DateTime?
+  suspendedReason String?
+  /// Optimistic-concurrency counter, bumped by every lifecycle change.
+  version         Int                      @default(0)
+  /// Set once the expiry reminder for the current expiresAt has gone out.
+  reminderSentFor DateTime?
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
+  vendor          Vendor                   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  currentPlan     PosPlan?                 @relation(fields: [planId], references: [id], onDelete: SetNull)
+  periods         PosSubscriptionPeriod[]
+
+  @@index([status, expiresAt])
+  @@map("pos_subscriptions")
+}
+
+/// Admin-configured POS plan (price + duration). Plans are deactivated, never
+/// deleted once a payment references them.
+model PosPlan {
+  id            String                   @id @default(cuid())
+  code          String                   @unique
+  name          String
+  description   String?
+  price         Decimal                  @db.Decimal(18, 2)
+  currency      String                   @default("BDT")
+  durationDays  Int
+  isActive      Boolean                  @default(true)
+  sortOrder     Int                      @default(0)
+  createdAt     DateTime                 @default(now())
+  updatedAt     DateTime                 @updatedAt
+  subscriptions PosSubscription[]
+  payments      PosSubscriptionPayment[]
+
+  @@map("pos_plans")
+}
+
+/// Append-only history of every entitlement change (trial, payment, admin
+/// grant/extend/revoke/suspend/restore, legacy backfill). Actor ids are plain
+/// strings so history survives user deletion.
+model PosSubscriptionPeriod {
+  id                String          @id @default(cuid())
+  subscriptionId    String
+  vendorId          String
+  kind              PosPeriodKind
+  previousStatus    String?
+  newStatus         String?
+  previousExpiresAt DateTime?
+  newExpiresAt      DateTime?
+  planId            String?
+  paymentId         String?         @unique
+  actorUserId       String?
+  actorRole         String?
+  reason            String?
+  meta              Json?
+  createdAt         DateTime        @default(now())
+  subscription      PosSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([vendorId, createdAt])
+  @@map("pos_subscription_periods")
+}
+
+/// One row per vendor that has EVER received the automatic trial — the
+/// primary key makes a second automatic trial impossible at the DB level.
+model PosTrialGrant {
+  vendorId  String   @id
+  grantedAt DateTime @default(now())
+  endsAt    DateTime
+  days      Int
+  trigger   String
+  vendor    Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@map("pos_trial_grants")
+}
+
+/// A POS subscription payment through the platform's gateway. Separate from
+/// the order-linked Payment model. Applied to the entitlement only after the
+/// gateway's own API confirms it (amount + currency checked against this row).
+model PosSubscriptionPayment {
+  id                String              @id @default(cuid())
+  vendorId          String
+  planId            String
+  amount            Decimal             @db.Decimal(18, 2)
+  currency          String              @default("BDT")
+  durationDays      Int
+  status            PosSubPaymentStatus @default(PENDING)
+  gateway           String
+  paymentProviderId String?
+  tranId            String              @unique
+  gatewayRef        String?
+  initiatedByUserId String?
+  verifiedAt        DateTime?
+  appliedAt         DateTime?
+  failureReason     String?
+  verification      Json?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  vendor            Vendor              @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  plan              PosPlan             @relation(fields: [planId], references: [id], onDelete: Restrict)
+
+  @@index([vendorId, createdAt])
+  @@index([status, createdAt])
+  @@map("pos_subscription_payments")
+}
+
+model PosSale {
+  id                  String            @id @default(cuid())
+  vendorId            String
+  invoiceNo           String
+  voucherNo           String
+  /// Legacy terminal-login attribution (PosStaff); kept for historical sales.
+  staffId             String?
+  /// Who made the sale: the signed-in user (owner or employee) — session-derived.
+  soldByUserId        String?
+  /// Employee.id when an employee made the sale (null for the vendor owner).
+  soldByEmployeeId    String?
+  customerId          String?
+  bankAccountId       String?
+  isWalkIn            Boolean           @default(true)
+  subtotal            Float
+  discountAmount      Float             @default(0)
+  discountPct         Float             @default(0)
+  discountType        DiscountValueType @default(PERCENT)
+  taxAmount           Float             @default(0)
+  netBilling          Float
+  paidAmount          Float             @default(0)
+  dueAmount           Float             @default(0)
+  extraAmount         Float             @default(0)
+  dueCutAmount        Float             @default(0)
+  walletAddAmount     Float             @default(0)
+  cogs                Float             @default(0)
+  paymentMethod       PosPaymentMethod  @default(CASH)
+  note                String?
+  status              PosSaleStatus     @default(PAID)
+  saleDate            DateTime          @default(now())
+  createdAt           DateTime          @default(now())
+  accountingVoucherId String?           @unique
+  items               PosSaleItem[]
+  accountingVoucher   Voucher?          @relation(fields: [accountingVoucherId], references: [id])
+  bankAccount         PosBankAccount?   @relation(fields: [bankAccountId], references: [id])
+  customer            PosCustomer?      @relation(fields: [customerId], references: [id])
+  staff               PosStaff?         @relation(fields: [staffId], references: [id])
+  vendor              Vendor            @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  stockMovements      StockMovement[]
+
+  @@unique([vendorId, invoiceNo])
+  @@index([vendorId, saleDate])
+  @@index([vendorId, status])
+  @@index([vendorId, soldByEmployeeId])
+  @@map("pos_sales")
+}
+
+model PosSaleItem {
+  id          String           @id @default(cuid())
+  saleId      String
+  variantId   String?
+  name        String
+  icon        String?
+  qty         Int
+  /// Units already refunded across all refunds (bounded by qty, incremented conditionally).
+  refundedQty Int              @default(0)
+  price       Float
+  cost        Float            @default(0)
+  taxRate     Float            @default(0)
+  warehouseId String?
+  rackId      String?
+  rack        WarehouseRack?   @relation(fields: [rackId], references: [id])
+  sale        PosSale          @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  variant     ProductVariant?  @relation(fields: [variantId], references: [id])
+  warehouse   VendorWarehouse? @relation(fields: [warehouseId], references: [id])
+
+  @@index([saleId])
+  @@map("pos_sale_items")
+}
+
+enum PosSubscriptionSource {
+  TRIAL
+  PAID
+  COMPLIMENTARY
+  LEGACY
+}
+
+enum PosPeriodKind {
+  TRIAL
+  PAYMENT
+  GRANT
+  EXTEND
+  REVOKE
+  SUSPEND
+  RESTORE
+  LEGACY_BACKFILL
+  EXPIRE
+}
+
+enum PosSubPaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  CANCELLED
+  REFUNDED
+}

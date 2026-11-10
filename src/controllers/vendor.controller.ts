@@ -1,8 +1,11 @@
 // controllers/vendor.controller.ts
 import type { Request, Response } from 'express';
 import { VendorService } from '../services/vendor.service.ts';
+import { BankAccountService } from "../services/bankAccountService.ts";
+
 import { VendorStatus, PayoutStatus, DocumentType } from '@prisma/client';
 import { uploadToR2, deleteFromR2 } from '../lib/cloudflare-r2.ts';
+import type { AuthRequest } from '../middlewares/auth.middleware.ts';
 import type { 
   CreateVendorRequest, 
   UpdateVendorProfileRequest,
@@ -17,7 +20,6 @@ import type {
   VendorExportOptions,
   VendorAddressRequest,
   VendorPersonalInfoRequest,
-  VendorBankInfoRequest,
   VendorDocumentRequest,
   VendorSubscriptionRequest
 } from '@/types/vendor.types.ts';
@@ -83,10 +85,8 @@ export class VendorController {
   getVendorById = async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      console.log(id)
 
       const vendor = await this.vendorService.getVendorById(id);
-      console.log(vendor)
       
       if (!vendor) {
         return res.status(404).json({
@@ -111,7 +111,9 @@ export class VendorController {
  updateVendorProfile = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const data: UpdateVendorProfileRequest = req.body;
+    // Vendor status is never changed through the profile: suspend, activate
+    // and deactivate go only through the ADMIN status routes.
+    const { status: _ignoredStatus, ...data }: UpdateVendorProfileRequest & { status?: unknown } = req.body ?? {};
     
     // Get current vendor to check for existing avatar
     const currentVendor = await this.vendorService.getVendorById(id);
@@ -132,7 +134,6 @@ export class VendorController {
           const oldKey = this.extractKeyFromUrl(currentVendor.avatar);
           if (oldKey) {
             await deleteFromR2(oldKey);
-            console.log('🗑️ Old avatar deleted successfully:', oldKey);
           }
         } catch (deleteError) {
           console.error('⚠️ Failed to delete old avatar:', deleteError);
@@ -156,7 +157,6 @@ export class VendorController {
 
       // Set the avatar URL in the data
       data.avatar = uploadResult.url;
-      console.log('✅ New avatar uploaded:', data.avatar);
     }
 
     const vendor = await this.vendorService.updateVendorProfile(id, data);
@@ -303,7 +303,8 @@ setUnderReview = async (req: Request, res: Response) => {
 verifyVendor = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { approvedBy } = req.body; // Admin user ID
+    // The approver is the authenticated admin (User id), never a body value.
+    const approvedBy = (req as AuthRequest).user?.rawId;
     
     const vendor = await this.vendorService.verifyVendor(id, approvedBy);
     
@@ -396,7 +397,6 @@ requestReVerification = async (req: Request, res: Response) => {
   // ================================
 
    createOrUpdatePersonalInfo=async(req: Request, res: Response) =>{
-  console.log('Personal info request:', req.body);
   try {
     const vendorId = req.params.id;
     const data: VendorPersonalInfoRequest = req.body;
@@ -529,45 +529,104 @@ getCompleteProfile = async (req: Request, res: Response) => {
 // ================================
 // BANK INFO MANAGEMENT
 // ================================
-createOrUpdateBankInfo = async (req: Request, res: Response) => {
+
+addBankAccount = async (req: Request, res: Response) => {
   try {
     const vendorId = req.params.id;
-    const data: VendorBankInfoRequest = req.body;
+    const { type, ...input } = req.body;
 
-    const bankInfo = await this.vendorService.createOrUpdateBankInfo(vendorId, data);
-    
-    res.json({
+    let result;
+
+    switch (type) {
+      case "BANK":
+        if (!input.bankBranchId || !input.accountName || !input.accountNumber) {
+          return res.status(400).json({
+            success: false,
+            message: "bankBranchId, accountName and accountNumber are required for BANK accounts",
+          });
+        }
+        result = await BankAccountService.addVendorPaymentAccount(vendorId, input);
+        break;
+
+      case "MOBILE_BANKING":
+        if (!input.mobileProvider || !input.walletNumber) {
+          return res.status(400).json({
+            success: false,
+            message: "mobileProvider and walletNumber are required for MOBILE_BANKING accounts",
+          });
+        }
+        result = await BankAccountService.addVendorMobileBankingAccount(vendorId, input);
+        break;
+
+      case "CARD":
+        if (!input.cardProcessor) {
+          return res.status(400).json({
+            success: false,
+            message: "cardProcessor is required for CARD accounts",
+          });
+        }
+        result = await BankAccountService.addVendorCardAccount(vendorId, input);
+        break;
+
+      case "CASH":
+        result = await BankAccountService.addVendorCashAccount(vendorId, input);
+        break;
+
+      default:
+        return res.status(400).json({
+          success: false,
+          message: `Invalid or missing payment instrument type: ${type}`,
+        });
+    }
+
+    res.status(201).json({
       success: true,
-      data: bankInfo,
-      message: 'Bank information updated successfully'
+      message: "Payment account added successfully",
+      data: result,
     });
   } catch (error: any) {
-    res.status(500).json({
+    res.status(400).json({
       success: false,
-      message: 'Failed to update bank information',
-      error: error.message
+      message: "Failed to add payment account",
+      error: error.message,
     });
   }
 };
 
-getBankInfo = async (req: Request, res: Response) => {
+listBankAccounts = async (req: Request, res: Response) => {
   try {
     const vendorId = req.params.id;
-    const bankInfo = await this.vendorService.getBankInfo(vendorId);
-    
-    res.json({
-      success: true,
-      data: bankInfo
-    });
+    const data = await BankAccountService.listVendorPaymentAccounts(vendorId);
+    res.json({ success: true, data });
   } catch (error: any) {
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch bank information',
-      error: error.message
+      message: "Failed to fetch payment accounts",
+      error: error.message,
     });
   }
 };
 
+setDefaultBankAccount = async (req: Request, res: Response) => {
+  try {
+    // The route declares `:bankAccountId` (vendor.routes.ts) — this previously
+    // read `paymentAccountId`, which is always undefined, so set-default
+    // always failed with "Payment account not found for this vendor."
+    const { id: vendorId, bankAccountId } = req.params;
+    const result = await BankAccountService.setDefaultVendorPaymentAccount(vendorId, bankAccountId);
+    res.json({
+      success: true,
+      message: "Default payment account updated successfully",
+      data: result,
+    });
+  } catch (error: any) {
+    res.status(400).json({
+      success: false,
+      message: "Failed to set default payment account",
+      error: error.message,
+    });
+  }
+};
 // ================================
 // DOCUMENT MANAGEMENT
 // ================================
@@ -633,7 +692,7 @@ getBankInfo = async (req: Request, res: Response) => {
         const document = await this.vendorService.uploadDocument(vendorId, {
           type: documentType,
           title: file.originalname,
-          filePath: uploadResult.url,
+          filePath: key,  
           verificationStatus: 'PENDING'
         });
 
@@ -723,8 +782,15 @@ getBankInfo = async (req: Request, res: Response) => {
 deleteDocument = async (req: Request, res: Response) => {
   try {
     const { documentId } = req.params;
+    // A vendor may delete only its own documents (another vendor's → 404);
+    // ADMIN may delete any.
+    const user = (req as AuthRequest).user;
+    const ownerVendorId = user?.role === 'VENDOR' ? user.vendorId : undefined;
+    if (user?.role === 'VENDOR' && !ownerVendorId) {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
 
-    const document = await this.vendorService.deleteDocument(documentId);
+    const document = await this.vendorService.deleteDocument(documentId, ownerVendorId ?? undefined);
 
     res.json({
       success: true,
@@ -732,6 +798,9 @@ deleteDocument = async (req: Request, res: Response) => {
       data: document
     });
   } catch (error: any) {
+    if (error?.statusCode === 404) {
+      return res.status(404).json({ success: false, message: 'Document not found' });
+    }
     console.error('Error deleting document:', error);
     res.status(500).json({
       success: false,
@@ -845,7 +914,6 @@ updateSettings = async (req: Request, res: Response) => {
 
   // Commission Management
    setCommissionRate = async (req: Request, res: Response) => {
-    console.log(req.params,"bulk")
     try {
       const { id } = req.params;
       const data: VendorCommissionRequest = req.body;
@@ -886,7 +954,6 @@ updateSettings = async (req: Request, res: Response) => {
   };
 
   bulkUpdateCommissions = async (req: Request, res: Response) => {
-      console.log(req.body,"controller data")
 
     try {
       const data: BulkCommissionUpdateRequest = req.body;

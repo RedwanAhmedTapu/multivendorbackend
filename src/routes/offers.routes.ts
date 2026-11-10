@@ -7,6 +7,7 @@ import {
   PublicOfferController
 } from '../controllers/offers.controller.ts';
 import { authenticateUser, authorizeRoles } from '../middlewares/auth.middleware.ts';
+import { blockVendorEmployees, requireVendorPermission } from '../middlewares/permission.middleware.ts';
 import { categoryimageUpload } from '../middlewares/up.middleware.ts';
 
 const router = Router();
@@ -38,7 +39,10 @@ router.get('/public', publicOfferController.getPublicOffers);
  * @access  Public
  */
 router.get('/flash-sales', publicOfferController.getActiveFlashSales);
-
+router.get(
+  '/public/product/:productId',
+  publicOfferController.getOffersForProduct
+);
 // =========================== 
 // ADMIN ROUTES - OFFER MANAGEMENT
 // ===========================
@@ -208,6 +212,8 @@ router.get(
 router.get(
   '/admin/vendor-permissions/:vendorId',
   authenticateUser,
+  authorizeRoles("ADMIN"),
+  blockVendorEmployees,
   adminOfferController.getVendorPermissions
 );
 
@@ -326,12 +332,12 @@ router.get(
 /**
  * @route   GET /api/offers/vendor/permissions
  * @desc    Get vendor offer permissions
- * @access  Vendor
+ * @access  Vendor, or vendor staff with offerManagement (vendor from the session)
  */
 router.get(
   '/vendor/permissions',
   authenticateUser,
-  authorizeRoles("VENDOR"),
+  requireVendorPermission("offerManagement"),
   vendorOfferController.getVendorPermissions
 );
 

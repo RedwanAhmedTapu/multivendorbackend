@@ -1,6 +1,6 @@
 import type { Request, Response } from 'express';
 import * as supplierService from '../services/supplier.service.ts';
-import type { SupplierListQuery } from '../types/erp.types.ts';
+import type { SupplierListQuery } from '../types/supplier.types.ts';
 
 export class SupplierController {
   // ─── POST /api/suppliers ───────────────────────────────────────────────────

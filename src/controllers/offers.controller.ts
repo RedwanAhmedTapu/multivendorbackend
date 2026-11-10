@@ -6,7 +6,8 @@ import {
   CustomerOfferService,
   OfferValidationService,
   OfferUsageService,
-  OfferReportingService
+  OfferReportingService,
+  OfferTransitionError
 } from '../services/offer.service.ts';
 
 import type {
@@ -466,8 +467,10 @@ class AdminOfferController {
 
   approveVendorOffer = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const adminId = req.user?.id;
-      if (!adminId) {
+      // AuditLog.user references User.id; for ADMIN, req.user.id is the
+      // auto-provisioned Employee id, so the audit actor is rawId.
+      const adminUserId = req.user?.rawId;
+      if (!adminUserId) {
         return res.status(401).json({ 
           success: false, 
           message: 'Unauthorized' 
@@ -475,9 +478,15 @@ class AdminOfferController {
       }
 
       const { offerId } = req.params;
-      const { approved } = req.body;
+      const { approved, reason } = req.body ?? {};
+      if (typeof approved !== 'boolean') {
+        return res.status(400).json({ success: false, message: "'approved' must be true or false" });
+      }
+      if (reason !== undefined && typeof reason !== 'string') {
+        return res.status(400).json({ success: false, message: "'reason' must be a string" });
+      }
 
-      const offer = await this.adminOfferService.approveVendorOffer(adminId, offerId, approved);
+      const offer = await this.adminOfferService.approveVendorOffer(adminUserId, offerId, approved, reason);
 
       res.status(200).json({
         success: true,
@@ -485,6 +494,9 @@ class AdminOfferController {
         data: offer
       });
     } catch (error) {
+      if (error instanceof OfferTransitionError) {
+        return res.status(error.statusCode).json({ success: false, message: error.message });
+      }
       next(error);
     }
   };
@@ -1228,7 +1240,15 @@ class PublicOfferController {
   constructor() {
     this.customerOfferService = new CustomerOfferService();
   }
-
+getOffersForProduct = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { productId } = req.params;
+    const offers = await this.customerOfferService.getOffersForProduct(productId);
+    res.status(200).json({ success: true, data: offers });
+  } catch (error) {
+    next(error);
+  }
+};
   getPublicOffers = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const filters = {

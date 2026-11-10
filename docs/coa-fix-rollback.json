@@ -1,0 +1,17 @@
+{
+ "fixedAt": "2026-10-02T13:04:27.850Z",
+ "rows": [
+  {
+   "id": "cmtrj80ea0019o03sgcphhhtz",
+   "vendorId": "cmiu7fdrq0000h9eafdh98xru",
+   "name": "Sales Returns",
+   "oldAccountClass": "EXPENSE"
+  },
+  {
+   "id": "cmtrj80jz001ao03sxs30xhjj",
+   "vendorId": "cmiu7fdrq0000h9eafdh98xru",
+   "name": "Vendor Funded Discounts",
+   "oldAccountClass": "EXPENSE"
+  }
+ ]
+}

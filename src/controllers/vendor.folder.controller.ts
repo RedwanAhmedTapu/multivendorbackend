@@ -2,8 +2,9 @@ import { folderService } from "../services/vendor.folder.service.ts";
 import type { Request, Response } from "express";
 
 export class FolderController {
-  
+  // ─────────────────────────────────────────────────────────────
   // Create folder
+  // ─────────────────────────────────────────────────────────────
   async createFolder(req: Request, res: Response) {
     try {
       const vendorId = req.user?.vendorId?.toString();
@@ -14,7 +15,7 @@ export class FolderController {
         });
       }
 
-      const { name, parentPath } = req.body;
+      const { name, parentId } = req.body;
 
       if (!name) {
         return res.status(400).json({
@@ -23,21 +24,23 @@ export class FolderController {
         });
       }
 
-      const folder = await folderService.createFolder(vendorId, name, parentPath);
+      const folder = await folderService.createFolder(vendorId, name, parentId || null);
 
       res.json({
         success: true,
         folder,
       });
     } catch (error: any) {
-      res.status(500).json({
+      res.status(400).json({
         success: false,
         message: error.message || "Failed to create folder",
       });
     }
   }
 
-  // Get folders
+  // ─────────────────────────────────────────────────────────────
+  // Get folders (flat, with file/subfolder counts)
+  // ─────────────────────────────────────────────────────────────
   async getFolders(req: Request, res: Response) {
     try {
       const vendorId = req.user?.vendorId?.toString();
@@ -62,7 +65,66 @@ export class FolderController {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────
+  // Get folders as nested tree
+  // ─────────────────────────────────────────────────────────────
+  async getFolderTree(req: Request, res: Response) {
+    try {
+      const vendorId = req.user?.vendorId?.toString();
+      if (!vendorId) {
+        return res.status(400).json({
+          success: false,
+          message: "Vendor ID not found",
+        });
+      }
+
+      const tree = await folderService.getVendorFolderTree(vendorId);
+
+      res.json({
+        success: true,
+        tree,
+      });
+    } catch (error: any) {
+      res.status(500).json({
+        success: false,
+        message: error.message || "Failed to fetch folder tree",
+      });
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Get single folder (with children + files)
+  // ─────────────────────────────────────────────────────────────
+  async getFolderById(req: Request, res: Response) {
+    try {
+      const vendorId = req.user?.vendorId?.toString();
+      if (!vendorId) {
+        return res.status(400).json({
+          success: false,
+          message: "Vendor ID not found",
+        });
+      }
+
+      const { folderId } = req.params;
+
+      const folder = await folderService.getFolderById(folderId, vendorId);
+
+      res.json({
+        success: true,
+        folder,
+      });
+    } catch (error: any) {
+      const status = error.message === "Folder not found" ? 404 : 500;
+      res.status(status).json({
+        success: false,
+        message: error.message || "Failed to fetch folder",
+      });
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // Rename folder
+  // ─────────────────────────────────────────────────────────────
   async renameFolder(req: Request, res: Response) {
     try {
       const vendorId = req.user?.vendorId?.toString();
@@ -76,6 +138,13 @@ export class FolderController {
       const { folderId } = req.params;
       const { newName } = req.body;
 
+      if (!newName) {
+        return res.status(400).json({
+          success: false,
+          message: "newName is required",
+        });
+      }
+
       const result = await folderService.renameFolder(folderId, vendorId, newName);
 
       res.json({
@@ -83,14 +152,52 @@ export class FolderController {
         ...result,
       });
     } catch (error: any) {
-      res.status(500).json({
+      const status = error.message === "Folder not found" ? 404 : 400;
+      res.status(status).json({
         success: false,
         message: error.message || "Failed to rename folder",
       });
     }
   }
 
+  // ─────────────────────────────────────────────────────────────
+  // Move folder (change parent)
+  // ─────────────────────────────────────────────────────────────
+  async moveFolder(req: Request, res: Response) {
+    try {
+      const vendorId = req.user?.vendorId?.toString();
+      if (!vendorId) {
+        return res.status(400).json({
+          success: false,
+          message: "Vendor ID not found",
+        });
+      }
+
+      const { folderId } = req.params;
+      const { newParentId } = req.body;
+
+      const result = await folderService.moveFolder(
+        folderId,
+        vendorId,
+        newParentId ?? null
+      );
+
+      res.json({
+        success: true,
+        ...result,
+      });
+    } catch (error: any) {
+      const status = error.message === "Folder not found" ? 404 : 400;
+      res.status(status).json({
+        success: false,
+        message: error.message || "Failed to move folder",
+      });
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // Delete folder
+  // ─────────────────────────────────────────────────────────────
   async deleteFolder(req: Request, res: Response) {
     try {
       const vendorId = req.user?.vendorId?.toString();
@@ -103,21 +210,24 @@ export class FolderController {
 
       const { folderId } = req.params;
 
-      const result = await folderService.deleteFolder(folderId, vendorId);
+      await folderService.deleteFolder(folderId, vendorId);
 
       res.json({
         success: true,
         message: "Folder deleted successfully",
       });
     } catch (error: any) {
-      res.status(500).json({
+      const status = error.message === "Folder not found" ? 404 : 400;
+      res.status(status).json({
         success: false,
         message: error.message || "Failed to delete folder",
       });
     }
   }
 
+  // ─────────────────────────────────────────────────────────────
   // Move files
+  // ─────────────────────────────────────────────────────────────
   async moveFiles(req: Request, res: Response) {
     try {
       const vendorId = req.user?.vendorId?.toString();
@@ -128,7 +238,7 @@ export class FolderController {
         });
       }
 
-      const { fileIds, targetFolderPath } = req.body;
+      const { fileIds, targetFolderId } = req.body;
 
       if (!Array.isArray(fileIds) || fileIds.length === 0) {
         return res.status(400).json({
@@ -139,7 +249,7 @@ export class FolderController {
 
       const result = await folderService.moveFilesToFolder(
         fileIds,
-        targetFolderPath,
+        targetFolderId ?? null,
         vendorId
       );
 
@@ -149,7 +259,7 @@ export class FolderController {
         ...result,
       });
     } catch (error: any) {
-      res.status(500).json({
+      res.status(400).json({
         success: false,
         message: error.message || "Failed to move files",
       });

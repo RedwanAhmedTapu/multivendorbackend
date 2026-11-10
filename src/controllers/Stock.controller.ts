@@ -6,7 +6,7 @@ import type {
   StockDamageDTO,
   StockTransferDTO,
   StockSellDamageDTO,
-} from '../types/erp.types.ts';
+} from '../types/stock-inventory.types.ts';
 
 export class StockController {
   // ─── GET /api/stock ────────────────────────────────────────────────────────

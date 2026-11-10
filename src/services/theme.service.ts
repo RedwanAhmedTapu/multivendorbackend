@@ -1,18 +1,49 @@
 // services/theme.service.ts
-import { prisma } from '../config/prisma.ts';
+import { prisma, prismaDirect } from '../config/prisma.ts';
 import type { 
   Theme, 
   LayoutType, 
-  ThemeStatus, 
   CreateThemeDto, 
 } from '../types/theme.types.ts';
-import { 
-  
-  LAYOUT_TYPES, 
-  LAYOUT_OPTIONS  
+import {
+
+  LAYOUT_TYPES,
+  LAYOUT_OPTIONS
 } from '../types/theme.types.ts';
+import type { Prisma } from '@prisma/client';
+
+/** Thrown when a write would leave the homepage with no active layout. */
+export const ACTIVE_LAYOUT_LOCKED =
+  'The active layout cannot be deactivated. Activate another layout instead.';
 
 export class ThemeService {
+  /**
+   * Runs `fn` in a transaction after locking every theme row in a fixed
+   * order, so concurrent activations serialize instead of interleaving
+   * (no deadlocks, never two active layouts).
+   */
+  private withThemesLocked<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    // Direct (non-pooled) client — config/prisma.ts requires it for
+    // interactive transactions.
+    return prismaDirect.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM themes ORDER BY id FOR UPDATE`;
+      return fn(tx);
+    });
+  }
+
+  /** Makes `themeId` the only active theme. Call inside withThemesLocked. */
+  private async activateWithin(tx: Prisma.TransactionClient, themeId: string): Promise<Theme> {
+    await tx.theme.updateMany({
+      where: { id: { not: themeId } },
+      data: { status: 'inactive' },
+    });
+    const updatedTheme = await tx.theme.update({
+      where: { id: themeId },
+      data: { status: 'active' },
+    });
+    return updatedTheme as Theme;
+  }
+
   /**
    * Get all themes
    */
@@ -84,83 +115,49 @@ export class ThemeService {
    * Activate a theme (deactivates all others)
    */
   async activateTheme(layoutType: LayoutType): Promise<Theme> {
-    const theme = await this.getThemeByLayoutType(layoutType);
-    
-    if (!theme) {
-      throw new Error('Theme not found');
-    }
-
-    // Deactivate all other themes
-    await prisma.theme.updateMany({
-      where: {
-        id: {
-          not: theme.id,
-        },
-      },
-      data: {
-        status: 'inactive',
-      },
+    // Deactivate-others + activate commit together or not at all.
+    return this.withThemesLocked(async (tx) => {
+      const theme = await tx.theme.findUnique({ where: { layoutType } });
+      if (!theme) {
+        throw new Error('Theme not found');
+      }
+      return this.activateWithin(tx, theme.id);
     });
-
-    // Activate the selected theme
-    const updatedTheme = await prisma.theme.update({
-      where: { id: theme.id },
-      data: { status: 'active' },
-    });
-
-    return updatedTheme as Theme;
   }
 
   /**
-   * Deactivate a theme
+   * Deactivate a theme. The active layout can't be deactivated — that would
+   * leave the homepage with no active layout; activate another one instead.
    */
   async deactivateTheme(layoutType: LayoutType): Promise<Theme> {
-    const theme = await this.getThemeByLayoutType(layoutType);
-    
-    if (!theme) {
-      throw new Error('Theme not found');
-    }
-
-    const updatedTheme = await prisma.theme.update({
-      where: { id: theme.id },
-      data: { status: 'inactive' },
+    return this.withThemesLocked(async (tx) => {
+      const theme = await tx.theme.findUnique({ where: { layoutType } });
+      if (!theme) {
+        throw new Error('Theme not found');
+      }
+      if (theme.status === 'active') {
+        throw new Error(ACTIVE_LAYOUT_LOCKED);
+      }
+      return theme as Theme; // already inactive
     });
-
-    return updatedTheme as Theme;
   }
 
   /**
-   * Toggle theme status
+   * Toggle theme status. Only inactive → active is allowed (it activates the
+   * layout and deactivates the others); toggling the active layout off is
+   * refused for the same reason as deactivateTheme.
    */
   async toggleThemeStatus(layoutType: LayoutType): Promise<Theme> {
-    const theme = await this.getThemeByLayoutType(layoutType);
-    
-    if (!theme) {
-      throw new Error('Theme not found');
-    }
-
-    const newStatus: ThemeStatus = theme.status === 'active' ? 'inactive' : 'active';
-    
-    // If activating, deactivate all others
-    if (newStatus === 'active') {
-      await prisma.theme.updateMany({
-        where: {
-          id: {
-            not: theme.id,
-          },
-        },
-        data: {
-          status: 'inactive',
-        },
-      });
-    }
-
-    const updatedTheme = await prisma.theme.update({
-      where: { id: theme.id },
-      data: { status: newStatus },
+    return this.withThemesLocked(async (tx) => {
+      const theme = await tx.theme.findUnique({ where: { layoutType } });
+      if (!theme) {
+        throw new Error('Theme not found');
+      }
+      if (theme.status === 'active') {
+        throw new Error(ACTIVE_LAYOUT_LOCKED);
+      }
+      return this.activateWithin(tx, theme.id);
     });
-
-    return updatedTheme as Theme;
   }
 
   /**
@@ -180,14 +177,17 @@ export class ThemeService {
       description: option.description || null,
     }));
 
+    // Never create a second active layout when one is already active.
+    const hasActive = (await prisma.theme.count({ where: { status: 'active' } })) > 0;
+
     for (const layout of predefinedLayouts) {
       const exists = await prisma.theme.findUnique({
         where: { layoutType: layout.layoutType },
       });
 
       if (!exists) {
-        // Set first layout as active by default
-        const isFirst = layout.layoutType === 'layout_1';
+        // Set first layout as active by default (only if nothing is active)
+        const isFirst = layout.layoutType === 'layout_1' && !hasActive;
         await prisma.theme.create({
           data: {
             name: layout.name,

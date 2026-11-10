@@ -247,4 +247,46 @@ export const CategoryController = {
       res.status(500).json({ message: error.message });
     }
   },
+  async createCatalogRequest(req: Request, res: Response) {
+  try {
+    const vendorId = req.user.vendorId;
+
+    const request = await CategoryService.createCatalogRequest({
+      vendorId,
+      ...req.body,
+    });
+
+    res.status(201).json(request);
+  } catch (error: any) {
+    res.status(400).json({
+      message: error.message,
+    });
+  }
+},
+
+async getMyCatalogRequests(req: Request, res: Response) {
+  try {
+    const vendorId = req.user.vendorId;
+
+    const requests = await CategoryService.getVendorCatalogRequests(vendorId);
+
+    res.json(requests);
+  } catch (error: any) {
+    res.status(500).json({
+      message: error.message,
+    });
+  }
+},
+
+async getAllCatalogRequests(req: Request, res: Response) {
+  try {
+    const requests = await CategoryService.getAllCatalogRequests();
+
+    res.json(requests);
+  } catch (error: any) {
+    res.status(500).json({
+      message: error.message,
+    });
+  }
+},
 };

@@ -13,6 +13,12 @@ import type {
 import pkg from '@prisma/client';
 const { WarehouseType } = pkg;
 import type { StockMovementType } from '@prisma/client';
+import {
+  actorFromRequest,
+  assertWarehouseAccess,
+  assertVendorAccess,
+  isPlatformAdmin,
+} from '../modules/shared/warehouse-guard.ts';
 
 interface BulkWarehouseInput {
   pickupWarehouse: {
@@ -41,6 +47,25 @@ export class WarehouseController {
     this.service = new WarehouseService();
   }
 
+  // Vendor isolation helpers — every handler resolves the authenticated actor
+  // and proves ownership of each warehouse it touches.
+  private async guardWarehouse(req: Request, warehouseId: unknown) {
+    return assertWarehouseAccess(String(warehouseId ?? ''), actorFromRequest(req));
+  }
+  private async guardRack(req: Request, rackId: unknown) {
+    await this.guardWarehouse(req, await this.service.getRackWarehouseId(String(rackId ?? '')));
+  }
+  private async guardHoliday(req: Request, holidayId: unknown) {
+    await this.guardWarehouse(req, await this.service.getHolidayWarehouseId(String(holidayId ?? '')));
+  }
+  /** Vendor scope for list endpoints: non-admins only ever see their own vendor. */
+  private scopedVendorId(req: Request): string | undefined {
+    const actor = actorFromRequest(req);
+    if (isPlatformAdmin(actor)) return undefined;
+    assertVendorAccess(actor.vendorId ?? '', actor);
+    return actor.vendorId ?? undefined;
+  }
+
   // ─────────────────────────────────────────────────────────────────
   // BULK CREATE / UPDATE
   // ─────────────────────────────────────────────────────────────────
@@ -57,7 +82,7 @@ export class WarehouseController {
         });
       }
 
-      const result = await this.service.createOrUpdateBulkWarehouses(vendorId, data);
+      const result = await this.service.createOrUpdateBulkWarehouses(vendorId, data, actorFromRequest(req));
 
       return res.status(200).json({
         success: true,
@@ -78,7 +103,8 @@ export class WarehouseController {
       const { vendorId } = req.params;
       const data = req.body;
 
-      const warehouse = await this.service.createWarehouse({ ...data, vendorId });
+      // vendorId comes from the route only; the service picks allow-listed fields.
+      const warehouse = await this.service.createWarehouse({ ...data, vendorId }, actorFromRequest(req));
 
       return res.status(201).json({
         success: true,
@@ -93,14 +119,15 @@ export class WarehouseController {
   getWarehousesByVendor = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { vendorId } = req.params;
-      const { type, isDefault, locationId } = req.query;
+      const { type, isDefault, locationId, isActive } = req.query;
 
       const filters: any = {};
       if (type) filters.type = type as typeof WarehouseType[keyof typeof WarehouseType];
       if (isDefault !== undefined) filters.isDefault = isDefault === 'true';
       if (locationId) filters.locationId = locationId as string;
+      if (isActive !== undefined) filters.isActive = isActive === 'true';
 
-      const warehouses = await this.service.getWarehousesByVendor(vendorId, filters);
+      const warehouses = await this.service.getWarehousesByVendor(vendorId, filters, actorFromRequest(req));
 
       return res.status(200).json({
         success: true,
@@ -117,7 +144,7 @@ export class WarehouseController {
       const { id } = req.params;
       const { includeHolidays } = req.query;
 
-      const warehouse = await this.service.getWarehouseById(id, includeHolidays === 'true');
+      const warehouse = await this.service.getWarehouseById(id, includeHolidays === 'true', actorFromRequest(req));
 
       return res.status(200).json({
         success: true,
@@ -132,9 +159,10 @@ export class WarehouseController {
   updateWarehouse = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { id } = req.params;
-      const data = req.body;
 
-      const warehouse = await this.service.updateWarehouse(id, data);
+      // The body is never passed to Prisma: the service applies an explicit
+      // allow-list, rejects vendorId/id, and enforces field locks.
+      const warehouse = await this.service.updateWarehouse(id, req.body, actorFromRequest(req));
 
       return res.status(200).json({
         success: true,
@@ -150,7 +178,7 @@ export class WarehouseController {
     try {
       const { id } = req.params;
 
-      await this.service.deleteWarehouse(id);
+      await this.service.deleteWarehouse(id, actorFromRequest(req));
 
       return res.status(200).json({
         success: true,
@@ -166,7 +194,7 @@ export class WarehouseController {
     try {
       const { id } = req.params;
 
-      const warehouse = await this.service.setDefaultWarehouse(id);
+      const warehouse = await this.service.setDefaultWarehouse(id, actorFromRequest(req));
 
       return res.status(200).json({
         success: true,
@@ -178,8 +206,39 @@ export class WarehouseController {
     }
   };
 
+  /** GET /warehouses/:id/usage — derived operational state, field locks, deactivate/delete eligibility. */
+  getWarehouseUsage = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const usage = await this.service.getWarehouseUsageForActor(String(req.params.id), actorFromRequest(req));
+      return res.status(200).json({ success: true, message: 'Warehouse usage retrieved successfully', data: usage });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  /** PATCH /warehouses/:id/deactivate */
+  deactivateWarehouse = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const warehouse = await this.service.deactivateWarehouse(String(req.params.id), actorFromRequest(req));
+      return res.status(200).json({ success: true, message: 'Warehouse deactivated successfully', data: warehouse });
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  /** PATCH /warehouses/:id/reactivate */
+  reactivateWarehouse = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const warehouse = await this.service.reactivateWarehouse(String(req.params.id), actorFromRequest(req));
+      return res.status(200).json({ success: true, message: 'Warehouse reactivated successfully', data: warehouse });
+    } catch (error) {
+      next(error);
+    }
+  };
+
   // ─────────────────────────────────────────────────────────────────
   // RACK CRUD
+  // body: { code, label?, totalRows?, totalShelves?, isActive? }
   // ─────────────────────────────────────────────────────────────────
 
   createRack = async (req: Request, res: Response, next: NextFunction) => {
@@ -190,7 +249,14 @@ export class WarehouseController {
       if (!body.code) {
         return res.status(400).json({ success: false, message: 'code is required' });
       }
+      if (body.totalRows !== undefined && (!Number.isInteger(body.totalRows) || body.totalRows < 1)) {
+        return res.status(400).json({ success: false, message: 'totalRows must be a positive integer' });
+      }
+      if (body.totalShelves !== undefined && (!Number.isInteger(body.totalShelves) || body.totalShelves < 1)) {
+        return res.status(400).json({ success: false, message: 'totalShelves must be a positive integer' });
+      }
 
+      await this.guardWarehouse(req, warehouseId);
       const rack = await this.service.createRack({ ...body, warehouseId });
 
       return res.status(201).json({
@@ -206,12 +272,12 @@ export class WarehouseController {
   getRacksByWarehouse = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { warehouseId } = req.params;
-      const { isActive, row } = req.query;
+      const { isActive } = req.query;
 
       const filters: RackFilter = { warehouseId };
       if (isActive !== undefined) filters.isActive = isActive === 'true';
-      if (row) filters.row = row as string;
 
+      await this.guardWarehouse(req, warehouseId);
       const racks = await this.service.getRacksByWarehouse(warehouseId, filters);
 
       return res.status(200).json({
@@ -228,6 +294,7 @@ export class WarehouseController {
     try {
       const { id } = req.params;
 
+      await this.guardRack(req, id);
       const rack = await this.service.getRackById(id);
 
       return res.status(200).json({
@@ -245,6 +312,14 @@ export class WarehouseController {
       const { id } = req.params;
       const data = req.body as UpdateRackInput;
 
+      if (data.totalRows !== undefined && (!Number.isInteger(data.totalRows) || data.totalRows < 1)) {
+        return res.status(400).json({ success: false, message: 'totalRows must be a positive integer' });
+      }
+      if (data.totalShelves !== undefined && (!Number.isInteger(data.totalShelves) || data.totalShelves < 1)) {
+        return res.status(400).json({ success: false, message: 'totalShelves must be a positive integer' });
+      }
+
+      await this.guardRack(req, id);
       const rack = await this.service.updateRack(id, data);
 
       return res.status(200).json({
@@ -261,6 +336,7 @@ export class WarehouseController {
     try {
       const { id } = req.params;
 
+      await this.guardRack(req, id);
       await this.service.deleteRack(id);
 
       return res.status(200).json({
@@ -277,6 +353,7 @@ export class WarehouseController {
     try {
       const { id } = req.params;
 
+      await this.guardRack(req, id);
       const rack = await this.service.toggleRackActive(id);
 
       return res.status(200).json({
@@ -298,6 +375,7 @@ export class WarehouseController {
       const { warehouseId } = req.params;
       const data = req.body;
 
+      await this.guardWarehouse(req, warehouseId);
       const holiday = await this.service.createHoliday({ ...data, warehouseId });
 
       return res.status(201).json({
@@ -320,6 +398,7 @@ export class WarehouseController {
       if (endDate) filters.endDate = new Date(endDate as string);
       if (isOpen !== undefined) filters.isOpen = isOpen === 'true';
 
+      await this.guardWarehouse(req, warehouseId);
       const holidays = await this.service.getHolidaysByWarehouse(warehouseId, filters);
 
       return res.status(200).json({
@@ -337,6 +416,7 @@ export class WarehouseController {
       const { id } = req.params;
       const data = req.body;
 
+      await this.guardHoliday(req, id);
       const holiday = await this.service.updateHoliday(id, data);
 
       return res.status(200).json({
@@ -353,6 +433,7 @@ export class WarehouseController {
     try {
       const { id } = req.params;
 
+      await this.guardHoliday(req, id);
       await this.service.deleteHoliday(id);
 
       return res.status(200).json({
@@ -367,6 +448,7 @@ export class WarehouseController {
 
   // ─────────────────────────────────────────────────────────────────
   // STOCK — RECEIVE PURCHASE ORDER
+  // items[].rackId / rowNumber / shelfNumber are optional bin placement
   // ─────────────────────────────────────────────────────────────────
 
   receivePurchaseOrder = async (req: Request, res: Response, next: NextFunction) => {
@@ -386,7 +468,19 @@ export class WarehouseController {
           message: 'items array is required and must not be empty',
         });
       }
+      for (const item of body.items) {
+        if ((item.rowNumber !== undefined || item.shelfNumber !== undefined) && !item.rackId) {
+          return res.status(400).json({
+            success: false,
+            message: 'rowNumber/shelfNumber require a rackId on each item',
+          });
+        }
+      }
 
+      const wh = await this.guardWarehouse(req, warehouseId);
+      if (body.vendorId !== wh.vendorId) {
+        return res.status(403).json({ success: false, message: 'vendorId does not match the warehouse owner' });
+      }
       const result = await this.service.receivePurchaseOrder({
         ...body,
         warehouseId,
@@ -405,6 +499,8 @@ export class WarehouseController {
 
   // ─────────────────────────────────────────────────────────────────
   // STOCK — ADJUSTMENT / DAMAGE / RETURN
+  // body optionally includes rackId / rowNumber / shelfNumber to scope
+  // the adjustment to a specific bin
   // ─────────────────────────────────────────────────────────────────
 
   adjustStock = async (req: Request, res: Response, next: NextFunction) => {
@@ -430,7 +526,17 @@ export class WarehouseController {
           message: `movementType must be one of: ${allowedTypes.join(', ')}`,
         });
       }
+      if ((body.rowNumber !== undefined || body.shelfNumber !== undefined) && !body.rackId) {
+        return res.status(400).json({
+          success: false,
+          message: 'rowNumber/shelfNumber require a rackId',
+        });
+      }
 
+      const wh = await this.guardWarehouse(req, body.warehouseId);
+      if (body.vendorId !== wh.vendorId) {
+        return res.status(403).json({ success: false, message: 'vendorId does not match the warehouse owner' });
+      }
       const movement = await this.service.adjustStock({
         ...body,
         createdBy: (req as any).user?.id,
@@ -448,6 +554,8 @@ export class WarehouseController {
 
   // ─────────────────────────────────────────────────────────────────
   // STOCK — WAREHOUSE TRANSFER
+  // body optionally includes fromRackId/fromRowNumber/fromShelfNumber
+  // and toRackId/toRowNumber/toShelfNumber
   // ─────────────────────────────────────────────────────────────────
 
   transferStock = async (req: Request, res: Response, next: NextFunction) => {
@@ -469,7 +577,24 @@ export class WarehouseController {
       if (!body.quantity || body.quantity <= 0) {
         return res.status(400).json({ success: false, message: 'quantity must be a positive number' });
       }
+      if ((body.fromRowNumber !== undefined || body.fromShelfNumber !== undefined) && !body.fromRackId) {
+        return res.status(400).json({
+          success: false,
+          message: 'fromRowNumber/fromShelfNumber require a fromRackId',
+        });
+      }
+      if ((body.toRowNumber !== undefined || body.toShelfNumber !== undefined) && !body.toRackId) {
+        return res.status(400).json({
+          success: false,
+          message: 'toRowNumber/toShelfNumber require a toRackId',
+        });
+      }
 
+      const wh = await this.guardWarehouse(req, body.fromWarehouseId);
+      await this.guardWarehouse(req, body.toWarehouseId);
+      if (body.vendorId !== wh.vendorId) {
+        return res.status(403).json({ success: false, message: 'vendorId does not match the warehouse owner' });
+      }
       const movement = await this.service.transferStock({
         ...body,
         createdBy: (req as any).user?.id,
@@ -487,6 +612,8 @@ export class WarehouseController {
 
   // ─────────────────────────────────────────────────────────────────
   // STOCK — SELL DAMAGED
+  // body optionally includes fromRackId/fromRowNumber/fromShelfNumber
+  // to identify the specific damaged-stock bin being sold off
   // ─────────────────────────────────────────────────────────────────
 
   sellDamagedStock = async (req: Request, res: Response, next: NextFunction) => {
@@ -511,7 +638,17 @@ export class WarehouseController {
           message: 'saleAmount is required and must be positive',
         });
       }
+      if ((body.fromRowNumber !== undefined || body.fromShelfNumber !== undefined) && !body.fromRackId) {
+        return res.status(400).json({
+          success: false,
+          message: 'fromRowNumber/fromShelfNumber require a fromRackId',
+        });
+      }
 
+      const wh = await this.guardWarehouse(req, body.fromWarehouseId);
+      if (body.vendorId !== wh.vendorId) {
+        return res.status(403).json({ success: false, message: 'vendorId does not match the warehouse owner' });
+      }
       const movement = await this.service.sellDamagedStock({
         ...body,
         createdBy: (req as any).user?.id,
@@ -529,21 +666,36 @@ export class WarehouseController {
 
   // ─────────────────────────────────────────────────────────────────
   // STOCK — QUERY
+  // ?warehouseId=&variantId=&rackId=&rowNumber=&shelfNumber=&lowStockOnly=&outOfStockOnly=&page=&limit=
   // ─────────────────────────────────────────────────────────────────
 
   getWarehouseStock = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { warehouseId, variantId, rackId, lowStockOnly, outOfStockOnly, page, limit } =
-        req.query;
+      const {
+        warehouseId,
+        variantId,
+        rackId,
+        rowNumber,
+        shelfNumber,
+        lowStockOnly,
+        outOfStockOnly,
+        page,
+        limit,
+      } = req.query;
 
       const filters: WarehouseStockFilter = {};
       if (warehouseId) filters.warehouseId = warehouseId as string;
       if (variantId) filters.variantId = variantId as string;
       if (rackId) filters.rackId = rackId as string;
+      if (rowNumber) filters.rowNumber = parseInt(rowNumber as string, 10);
+      if (shelfNumber) filters.shelfNumber = parseInt(shelfNumber as string, 10);
       if (lowStockOnly) filters.lowStockOnly = lowStockOnly === 'true';
       if (outOfStockOnly) filters.outOfStockOnly = outOfStockOnly === 'true';
       if (page) filters.page = parseInt(page as string, 10);
       if (limit) filters.limit = parseInt(limit as string, 10);
+      if (filters.warehouseId) await this.guardWarehouse(req, filters.warehouseId);
+      const scopedVendorId = this.scopedVendorId(req);
+      if (scopedVendorId) filters.vendorId = scopedVendorId;
 
       const result = await this.service.getWarehouseStock(filters);
 
@@ -570,6 +722,9 @@ export class WarehouseController {
       if (endDate) filters.endDate = new Date(endDate as string);
       if (page) filters.page = parseInt(page as string, 10);
       if (limit) filters.limit = parseInt(limit as string, 10);
+      if (filters.warehouseId) await this.guardWarehouse(req, filters.warehouseId);
+      const scopedVendorId = this.scopedVendorId(req);
+      if (scopedVendorId) filters.vendorId = scopedVendorId;
 
       const result = await this.service.getStockMovements(filters);
 

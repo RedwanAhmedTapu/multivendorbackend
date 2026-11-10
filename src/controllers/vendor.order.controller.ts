@@ -1,6 +1,6 @@
 // controllers/vendor.order.controller.ts
 import type { Request, Response } from "express";
-import { VendorOrderService } from "../services/vendor.order.service.ts";
+import { VendorOrderService, VendorOrderStatusConflictError, CodReviewRequiredError } from "../services/vendor.order.service.ts";
 import type { OrderStatus, FulfillmentStatus } from "@prisma/client";
 
 /**
@@ -40,7 +40,9 @@ export const VendorOrderController = {
         page,
         limit,
         status: req.query.status as OrderStatus | undefined,
-        fulfillmentStatus: req.query.fulfillmentStatus as FulfillmentStatus | undefined,
+        fulfillmentStatus: req.query.fulfillmentStatus as
+          | FulfillmentStatus
+          | undefined,
         search: req.query.search as string | undefined,
         fromDate: req.query.fromDate as string | undefined,
         toDate: req.query.toDate as string | undefined,
@@ -76,7 +78,10 @@ export const VendorOrderController = {
       }
 
       const { vendorOrderId } = req.params;
-      const vendorOrder = await VendorOrderService.getById(vendorOrderId, vendorId);
+      const vendorOrder = await VendorOrderService.getById(
+        vendorOrderId,
+        vendorId,
+      );
 
       if (!vendorOrder) {
         return res.status(404).json({
@@ -89,7 +94,9 @@ export const VendorOrderController = {
     } catch (error: any) {
       console.error("VendorOrderController.getById error:", error);
       if (error.message === "Unauthorized") {
-        return res.status(403).json({ success: false, message: "Access denied" });
+        return res
+          .status(403)
+          .json({ success: false, message: "Access denied" });
       }
       return res.status(500).json({
         success: false,
@@ -113,7 +120,10 @@ export const VendorOrderController = {
       }
 
       const { vendorOrderId } = req.params;
-      const items = await VendorOrderService.getOrderItems(vendorOrderId, vendorId);
+      const items = await VendorOrderService.getOrderItems(
+        vendorOrderId,
+        vendorId,
+      );
 
       return res.json({
         success: true,
@@ -123,7 +133,9 @@ export const VendorOrderController = {
     } catch (error: any) {
       console.error("VendorOrderController.getOrderItems error:", error);
       if (error.message === "Unauthorized") {
-        return res.status(403).json({ success: false, message: "Access denied" });
+        return res
+          .status(403)
+          .json({ success: false, message: "Access denied" });
       }
       return res.status(500).json({
         success: false,
@@ -187,7 +199,7 @@ export const VendorOrderController = {
 
       const data = await VendorOrderService.getRevenue(
         vendorId,
-        period as "daily" | "weekly" | "monthly"
+        period as "daily" | "weekly" | "monthly",
       );
 
       return res.json({ success: true, data });
@@ -233,7 +245,7 @@ export const VendorOrderController = {
       const updated = await VendorOrderService.updateStatus(
         vendorOrderId,
         vendorId,
-        status as "PROCESSING" | "PACKAGING"
+        status as "PROCESSING" | "PACKAGING",
       );
 
       return res.json({
@@ -243,8 +255,14 @@ export const VendorOrderController = {
       });
     } catch (error: any) {
       console.error("VendorOrderController.updateStatus error:", error);
+      // Phase 4 (M-a): the order changed (e.g. was cancelled) meanwhile — nothing was written.
+      if (error instanceof VendorOrderStatusConflictError) {
+        return res.status(409).json({ success: false, code: error.code, message: error.message });
+      }
       if (error.message === "Unauthorized") {
-        return res.status(403).json({ success: false, message: "Access denied" });
+        return res
+          .status(403)
+          .json({ success: false, message: "Access denied" });
       }
       return res.status(400).json({
         success: false,
@@ -256,52 +274,40 @@ export const VendorOrderController = {
   /**
    * Mark order for delivery — triggers CourierOrder creation + shipping label
    * PATCH /api/vendor-orders/:vendorOrderId/mark-for-delivery
-   * Body: { warehouseId: string, specialInstruction?: string }
    */
   async markForDelivery(req: Request, res: Response) {
-    try {
-      const vendorId = req.user?.vendorId;
-      if (!vendorId) {
-        return res.status(400).json({
-          success: false,
-          message: "Vendor ID not found in token",
-        });
-      }
-
-      const { vendorOrderId } = req.params;
-      const { warehouseId, specialInstruction } = req.body;
-
-      if (!warehouseId || typeof warehouseId !== "string") {
-        return res.status(400).json({
-          success: false,
-          message: "warehouseId is required",
-        });
-      }
-
-      const result = await VendorOrderService.markForDelivery(
-        vendorOrderId,
-        vendorId,
-        warehouseId,
-        specialInstruction
-      );
-
-      return res.json({
-        success: true,
-        data: result,
-        message:
-          "Courier pickup requested. Please print the shipping label and hand over the package to the courier rider.",
-      });
-    } catch (error: any) {
-      console.error("VendorOrderController.markForDelivery error:", error);
-      if (error.message === "Unauthorized") {
-        return res.status(403).json({ success: false, message: "Access denied" });
-      }
-      return res.status(400).json({
-        success: false,
-        message: error.message || "Failed to mark order for delivery",
-      });
+  try {
+    const vendorId = req.user?.vendorId;
+    if (!vendorId) {
+      return res.status(400).json({ success: false, message: "Vendor ID not found in token" });
     }
-  },
+
+    const { vendorOrderId } = req.params;
+    const { specialInstruction } = req.body; // warehouseId বাদ — service নিজেই allocation থেকে বের করে
+
+    const result = await VendorOrderService.markForDelivery(
+      vendorOrderId,
+      vendorId,
+      specialInstruction,
+    );
+
+    return res.json({
+      success: true,
+      data: result,
+      message:
+        "Courier pickup requested for all applicable warehouse(s). Please print the shipping label(s) and hand over the package(s) to the courier rider.",
+    });
+  } catch (error: any) {
+    console.error("VendorOrderController.markForDelivery error:", error);
+    if (error.message === "Unauthorized") {
+      return res.status(403).json({ success: false, message: "Access denied" });
+    }
+    return res.status(400).json({
+      success: false,
+      message: error.message || "Failed to mark order for delivery",
+    });
+  }
+},
 
   /**
    * Confirm a COD order (vendor verifies customer by phone)
@@ -321,10 +327,15 @@ export const VendorOrderController = {
       const { vendorOrderId } = req.params;
       const { confirmedByName, note } = req.body;
 
-      if (!confirmedByName || typeof confirmedByName !== "string" || confirmedByName.trim().length === 0) {
+      if (
+        !confirmedByName ||
+        typeof confirmedByName !== "string" ||
+        confirmedByName.trim().length === 0
+      ) {
         return res.status(400).json({
           success: false,
-          message: "confirmedByName is required — enter the name of the staff member who verified the customer",
+          message:
+            "confirmedByName is required — enter the name of the staff member who verified the customer",
         });
       }
 
@@ -332,7 +343,7 @@ export const VendorOrderController = {
         vendorOrderId,
         vendorId,
         confirmedByName.trim(),
-        note
+        note,
       );
 
       return res.json({
@@ -342,8 +353,18 @@ export const VendorOrderController = {
       });
     } catch (error: any) {
       console.error("VendorOrderController.confirmCodOrder error:", error);
+      // High-risk COD order: reserved for FinixMart's fraud review — nothing was written.
+      if (error instanceof CodReviewRequiredError) {
+        return res.status(403).json({ success: false, code: error.code, message: error.message });
+      }
+      // Phase 4 (M-a): the order changed (e.g. was cancelled) meanwhile — nothing was written.
+      if (error instanceof VendorOrderStatusConflictError) {
+        return res.status(409).json({ success: false, code: error.code, message: error.message });
+      }
       if (error.message === "Unauthorized") {
-        return res.status(403).json({ success: false, message: "Access denied" });
+        return res
+          .status(403)
+          .json({ success: false, message: "Access denied" });
       }
       return res.status(400).json({
         success: false,
@@ -371,13 +392,18 @@ export const VendorOrderController = {
       }
 
       const { vendorOrderId } = req.params;
-      const labelData = await VendorOrderService.getShippingLabel(vendorOrderId, vendorId);
+      const labelData = await VendorOrderService.getShippingLabel(
+        vendorOrderId,
+        vendorId,
+      );
 
       return res.json({ success: true, data: labelData });
     } catch (error: any) {
       console.error("VendorOrderController.getShippingLabel error:", error);
       if (error.message === "Unauthorized") {
-        return res.status(403).json({ success: false, message: "Access denied" });
+        return res
+          .status(403)
+          .json({ success: false, message: "Access denied" });
       }
       if (error.message.includes("not yet available")) {
         return res.status(422).json({
@@ -407,13 +433,18 @@ export const VendorOrderController = {
       }
 
       const { vendorOrderId } = req.params;
-      const tracking = await VendorOrderService.getTracking(vendorOrderId, vendorId);
+      const tracking = await VendorOrderService.getTracking(
+        vendorOrderId,
+        vendorId,
+      );
 
       return res.json({ success: true, data: tracking });
     } catch (error: any) {
       console.error("VendorOrderController.getTracking error:", error);
       if (error.message === "Unauthorized") {
-        return res.status(403).json({ success: false, message: "Access denied" });
+        return res
+          .status(403)
+          .json({ success: false, message: "Access denied" });
       }
       if (error.message.includes("No courier assigned")) {
         return res.status(422).json({ success: false, message: error.message });
@@ -424,4 +455,21 @@ export const VendorOrderController = {
       });
     }
   },
+  // PATCH /api/vendor-orders/:vendorOrderId/confirm-return-receipt
+async confirmReturnReceipt(req: Request, res: Response) {
+  try {
+    const vendorId = req.user?.vendorId;
+    if (!vendorId) return res.status(400).json({ success: false, message: "Vendor ID not found in token" });
+    const { vendorOrderId } = req.params;
+    const { sellable, note } = req.body;
+    if (typeof sellable !== "boolean") {
+      return res.status(400).json({ success: false, message: "sellable (boolean) is required" });
+    }
+    const result = await VendorOrderService.confirmReturnReceipt(vendorOrderId, vendorId, sellable, note);
+    return res.json({ success: true, data: result, message: "Return receipt confirmed" });
+  } catch (error: any) {
+    if (error.message === "Unauthorized") return res.status(403).json({ success: false, message: "Access denied" });
+    return res.status(400).json({ success: false, message: error.message || "Failed to confirm return receipt" });
+  }
+},
 };
